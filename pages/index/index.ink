@@ -7,7 +7,7 @@
 <script setup>
 export default {
   data: {
-    build: 'vrf-b3',
+    build: 'vrf-b4',
     connType: 'tap: test',
     line1: 'BT forward check',
     line2: 'Enter = run fetch',
@@ -72,10 +72,33 @@ export default {
       else cur += (cur ? ' ' : '') + k;
     }
     if (cur) lines.push(cur);
+    // vrf-b4: enumerate subkeys of every object-valued wx key
+    // (wx.media, wx.speech, ...) into the k-lines.
+    const objDesc = [];
+    for (const k of keys) {
+      try {
+        const v = wx[k];
+        if (v && typeof v === 'object') {
+          objDesc.push(k + '{' + Object.keys(v).sort().join(',') + '}');
+        }
+      } catch (e) { /* ignore */ }
+    }
+    let joined = objDesc.join(' ') || 'no object values';
+    const toks = [];
+    for (const t of joined.split(' ')) {
+      if (t.length <= 36) toks.push(t);
+      else for (let i = 0; i < t.length; i += 36) toks.push(t.slice(i, i + 36));
+    }
+    const olines = [];
+    let ocur = 'obj:';
+    for (const t of toks) {
+      if ((ocur + ' ' + t).length > 38 && ocur.length > 5) { olines.push(ocur); ocur = t; }
+      else ocur += (ocur ? ' ' : '') + t;
+    }
+    if (ocur) olines.push(ocur);
     const patch = {};
-    const tail = lines.slice(-5);
-    for (let i = 0; i < 5; i++) patch['k' + (i + 1)] = tail[i] || '';
-    if (lines.length > 5 && patch.k1) patch.k1 = 'tail ' + patch.k1;
+    for (let i = 0; i < 5; i++) patch['k' + (i + 1)] = olines[i] || '';
+    if (olines.length > 5) patch.k5 = (patch.k5 + ' +more').slice(0, 40);
     this.setData(patch);
     // Camera/media API candidates (vrf-b3): can an AIUI agent shoot?
     const mark = (b) => (b ? 'Y' : '-');
