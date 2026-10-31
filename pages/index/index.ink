@@ -7,11 +7,12 @@
 <script setup>
 export default {
   data: {
-    build: 'vrf-b2',
+    build: 'vrf-b3',
     connType: 'tap: test',
     line1: 'BT forward check',
     line2: 'Enter = run fetch',
     probe: 'loc: ...',
+    cam: 'cam: ...',
     locRes: '',
     k1: '', k2: '', k3: '', k4: '', k5: ''
   },
@@ -72,11 +73,27 @@ export default {
     }
     if (cur) lines.push(cur);
     const patch = {};
-    for (let i = 0; i < 5; i++) patch['k' + (i + 1)] = lines[i] || '';
-    if (lines.length > 5) {
-      patch.k5 = (patch.k5 + ' +more').slice(0, 38);
-    }
+    const tail = lines.slice(-5);
+    for (let i = 0; i < 5; i++) patch['k' + (i + 1)] = tail[i] || '';
+    if (lines.length > 5 && patch.k1) patch.k1 = 'tail ' + patch.k1;
     this.setData(patch);
+    // Camera/media API candidates (vrf-b3): can an AIUI agent shoot?
+    const mark = (b) => (b ? 'Y' : '-');
+    const hasO = (o, k) => {
+      try { return !!o && typeof o[k] !== 'undefined'; } catch (e) { return false; }
+    };
+    this.setData({
+      cam: 'cam: cCC' + mark(has(wx, 'createCameraContext')) +
+        ' chI' + mark(has(wx, 'chooseImage')) +
+        ' chM' + mark(has(wx, 'chooseMedia')) +
+        ' tP' + mark(has(wx, 'takePhoto')) +
+        ' svI' + mark(has(wx, 'saveImageToPhotosAlbum')) +
+        ' scC' + mark(has(wx, 'scanCode')) +
+        ' gRM' + mark(has(wx, 'getRecorderManager')) +
+        ' cVC' + mark(has(wx, 'createVideoContext')) +
+        ' | oCam' + mark(hasO(wx, 'camera')) +
+        ' oSp' + mark(hasO(wx, 'speech'))
+    });
     // Live attempts, only where the API exists.
     const setRes = (s) => this.setData({ locRes: s });
     if (gL) {
@@ -157,6 +174,7 @@ export default {
     <text class="line">{{ line1 }}</text>
     <text class="line sub">{{ line2 }}</text>
     <text class="line sub probe">{{ probe }}</text>
+    <text class="line sub">{{ cam }}</text>
     <text class="line sub">{{ locRes }}</text>
     <text class="line keys">{{ k1 }}</text>
     <text class="line keys">{{ k2 }}</text>
