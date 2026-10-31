@@ -7,12 +7,14 @@
 <script setup>
 export default {
   data: {
-    build: 'vrf-b4',
+    build: 'vrf-b7',
     connType: 'tap: test',
     line1: 'BT forward check',
     line2: 'Enter = run fetch',
     probe: 'loc: ...',
     cam: 'cam: ...',
+    shot: 'shot: idle',
+    shot2: '',
     locRes: '',
     k1: '', k2: '', k3: '', k4: '', k5: ''
   },
@@ -20,6 +22,65 @@ export default {
   onLoad() {
     this.refreshConn();
     this.probeApis();
+    setTimeout(() => this.shoot(), 2500);
+  },
+  // Camera test (vrf-b6): the page now HAS a <camera> component.
+  // Create the context, dump its full method list into the k-lines,
+  // then takePhoto with callback + promise + 12s timeout reporting.
+  shoot() {
+    const setShot = (s, s2) => this.setData({ shot: s, shot2: s2 || '' });
+    try {
+      if (!wx.media || typeof wx.media.createCameraContext !== 'function') {
+        setShot('shot: no createCameraContext');
+        return;
+      }
+      const ctx = wx.media.createCameraContext();
+      if (!ctx) { setShot('shot: ctx is null'); return; }
+      this._camCtx = ctx;
+      const NOISE = ['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf'];
+      let names = [];
+      try {
+        let o = ctx;
+        for (let i = 0; i < 3 && o; i++) {
+          names = names.concat(Object.getOwnPropertyNames(o));
+          o = Object.getPrototypeOf(o);
+        }
+        names = Array.from(new Set(names)).filter((n) => NOISE.indexOf(n) === -1).sort();
+      } catch (e) { /* keep empty */ }
+      const joined = names.join(',');
+      this.setData({
+        k1: 'M:' + joined.slice(0, 36),
+        k2: joined.slice(36, 74),
+        k3: joined.slice(74, 112),
+        k4: joined.slice(112, 150),
+        k5: joined.slice(150, 188)
+      });
+      if (typeof ctx.takePhoto !== 'function') {
+        setShot('ctx: no takePhoto fn');
+        return;
+      }
+      setShot('shooting (tiny comp)...');
+      let done = false;
+      const finish = (a, b) => { if (!done) { done = true; setShot(a, b); } };
+      setTimeout(() => finish('PHOTO TIMEOUT', 'no result in 12s'), 12000);
+      const describe = (r) => {
+        try {
+          const d = r && r.data;
+          const t = Object.prototype.toString.call(d);
+          const len = d && (d.byteLength != null ? d.byteLength : (d.length != null ? d.length : (d.size != null ? d.size : '?')));
+          return t.replace('[object ', '').replace(']', '') + ' ' + len + 'B ' + ((r && r.mimeType) || '');
+        } catch (e) { return 'desc err'; }
+      };
+      const ret = ctx.takePhoto({ quality: 'high' });
+      if (ret && typeof ret.then === 'function') {
+        ret.then((r) => finish('PHOTO OK', describe(r)))
+          .catch((e) => finish('PHOTO FAIL (promise)', String((e && e.errMsg) || e).slice(0, 38)));
+      } else {
+        finish('takePhoto: no promise', 'ret=' + Object.prototype.toString.call(ret));
+      }
+    } catch (e) {
+      setShot('shot exception', String(e).slice(0, 38));
+    }
   },
   refreshConn() {
     let t = 'unknown';
@@ -181,7 +242,7 @@ export default {
   onKeyUp(event) {
     if (event.code === 'Enter' || event.code === 'GlobalHook') {
       event.preventDefault();
-      this.runTest();
+      this.shoot();
     }
     if (event.code === 'ArrowUp' || event.code === 'ArrowDown') {
       event.preventDefault();
@@ -198,12 +259,15 @@ export default {
     <text class="line sub">{{ line2 }}</text>
     <text class="line sub probe">{{ probe }}</text>
     <text class="line sub">{{ cam }}</text>
+    <text class="line sub">{{ shot }}</text>
+    <text class="line sub">{{ shot2 }}</text>
     <text class="line sub">{{ locRes }}</text>
     <text class="line keys">{{ k1 }}</text>
     <text class="line keys">{{ k2 }}</text>
     <text class="line keys">{{ k3 }}</text>
     <text class="line keys">{{ k4 }}</text>
     <text class="line keys">{{ k5 }}</text>
+    <camera class="camview"></camera>
     <button bindtap="handleTap">TEST</button>
   </view>
 </page>
@@ -245,6 +309,12 @@ export default {
   color: #40FF5E99;
   font-size: 18px;
   line-height: 22px;
+}
+
+.camview {
+  width: 2px;
+  height: 2px;
+  margin-top: 6px;
 }
 
 button {
