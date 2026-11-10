@@ -5,6 +5,20 @@
 </script>
 
 <script setup>
+// vrf-b18: ENGLISH mode spike (user request: if the conversation
+// partner speaks English, show a Japanese translation — with the
+// caveat that everything depends on the transcription). The ASR
+// lang was hard-coded ja-JP, which would mangle English speech
+// into phonetic Japanese garbage; en-US has never been probed on
+// this runtime. A double tap (a second GlobalHook inside the
+// pending-tap window) flips the ASR language ja-JP <-> en-US; the
+// ASR line shows JA/EN; in EN mode the cue lane becomes a
+// translator (🗣 English final -> 💡 Japanese, 44 chars) instead
+// of the content assistant. Switching language restarts the loop
+// (counters/history reset — acceptable for a spike). Open
+// questions for the device test: does en-US ASR exist/work here,
+// and how well does the wearer-tuned mic pick up a PARTNER's
+// voice (this spike only proves wearer-spoken English).
 // vrf-b17: cue PURPOSE correction (user, after the b15 device
 // conversation test): the point is NOT to converse with the LM —
 // it listens to the conversation and assists about the CONTENT:
@@ -101,7 +115,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b17',
+    build: 'vrf-b18',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -126,6 +140,7 @@ export default {
         ' i' + a.interim + ' f' + a.finals +
         ' rst' + a.restarts + ' err' + a.errors +
         ' max' + (a.sessMax / 1000).toFixed(1) + 's' +
+        (this._lang === 'en-US' ? ' EN' : ' JA') +
         (this._lmInfo || ''),
       asr2: lastDesc || a.lastDesc || ''
     };
@@ -161,7 +176,7 @@ export default {
     a.rec = rec;
     a.idx++;
     a.sessT0 = Date.now();
-    try { rec.lang = 'ja-JP'; } catch (e) { /* ignore */ }
+    try { rec.lang = this._lang || 'ja-JP'; } catch (e) { /* ignore */ }
     try { rec.interimResults = true; } catch (e) { /* ignore */ }
     try { rec.continuous = false; } catch (e) { /* ignore */ }
     rec.onresult = (ev) => {
@@ -277,7 +292,20 @@ export default {
   // a ⚠ entry into the reply log so they stay visible.
   lmInfoRender() {
     if (this._asr) { this.asrRender(); return; }
-    this.setData({ asr1: 'ASR: Enter = loop start/stop' + (this._lmInfo || '') });
+    this.setData({ asr1: 'ASR: Enter = loop start/stop' +
+      (this._lang === 'en-US' ? ' EN' : ' JA') + (this._lmInfo || '') });
+  },
+  // vrf-b18: flip the ASR language; restarts the loop when running.
+  langFlip() {
+    const wasOn = !!(this._asr && this._asr.on);
+    this._lang = (this._lang === 'en-US') ? 'ja-JP' : 'en-US';
+    if (wasOn) {
+      this.asrStop('lang');
+      this.toggleAsr();
+    } else {
+      this.lmInfoRender();
+    }
+    this.cueLogPush(this._lang === 'en-US' ? '🌐 EN 英語→和訳' : '🌐 JA 日本語');
   },
   lmFail(msg) {
     this._lm = { ok: false };
@@ -385,7 +413,9 @@ export default {
     const q = a.finalsHist.length ? a.finalsHist[a.finalsHist.length - 1] : '';
     c.curQ = q;
     const convo = a.finalsHist.slice(-3).join('\n');
-    const promptText = 'あなたは会話を聞いているだけの補助AIです。発言者への返答や、次に言うことの提案は絶対にしないでください。書き起こし（最新が最後）の中に難しい専門用語・概念が出てきたらその意味を、なければ話題の理解に役立つ背景知識があればそれを、日本語30文字以内で1つだけ出してください。挨拶・相づち・雑談など補助が不要なら NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
+    const promptText = (this._lang === 'en-US')
+      ? '次の英語の発話を自然な日本語に訳してください。訳文だけを日本語60文字以内で返してください。装飾記号は使わないでください。\n' + q
+      : 'あなたは会話を聞いているだけの補助AIです。発言者への返答や、次に言うことの提案は絶対にしないでください。書き起こし（最新が最後）の中に難しい専門用語・概念が出てきたらその意味を、なければ話題の理解に役立つ背景知識があればそれを、日本語30文字以内で1つだけ出してください。挨拶・相づち・雑談など補助が不要なら NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
     this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
       if (!sess) throw new Error('create-null');
       return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
@@ -401,7 +431,8 @@ export default {
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
         // NONE leaves no pair — there is no reply to read back.
         if (cue && cue !== 'NONE') {
-          this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)');
+          const lim = (this._lang === 'en-US') ? 44 : 30;
+          this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + cue.slice(0, lim) + ' (' + sec + 's)');
         }
       }
       this.cueDone();
@@ -430,7 +461,14 @@ export default {
     const code = event.code;
     if (code === 'GlobalHook') {
       event.preventDefault();
-      if (this._tapTimer) clearTimeout(this._tapTimer);
+      if (this._tapTimer) {
+        // Second GlobalHook inside the pending window = double
+        // tap: flip the ASR language instead of toggling (b18).
+        clearTimeout(this._tapTimer);
+        this._tapTimer = null;
+        this.langFlip();
+        return;
+      }
       this._tapTimer = setTimeout(() => {
         this._tapTimer = null;
         this.toggleAsr();
