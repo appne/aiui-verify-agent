@@ -5,6 +5,14 @@
 </script>
 
 <script setup>
+// vrf-b11: cue UX rework after the b10 device test — the wearer saw
+// NO reaction because cues queued FIFO behind 17 finals and landed
+// 35 s late. Now: a final instantly shows '💡考え中…', at most one
+// cue prompt is in flight, newer finals coalesce into a single
+// pending slot (latest only, never a backlog), the cue session is
+// recreated every 6 prompts to reset accumulated context, and every
+// LM call has a timeout so a hung create/prompt cannot stall the
+// engine silently.
 // vrf-b10: LM calls serialized + cue error text shown; layout slimmed
 // (ASR/LM block moved under the title, probe clutter compressed) so
 // the LM response line is actually readable on the glasses.
@@ -25,7 +33,7 @@
 // from onLoad.
 export default {
   data: {
-    build: 'vrf-b10',
+    build: 'vrf-b11',
     connType: 'tap: test',
     line1: 'tap: fetch test',
     line2: 'Enter = run fetch',
@@ -254,7 +262,7 @@ export default {
       sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: '',
       finalsHist: [], cueSeq: 0, lastFinal: '', liveInterim: ''
     };
-    this.ensureCueSession();
+    if (this._lm && this._lm.ok) this.cueSession();
     this.asrRender();
     this.asrStart();
   },
@@ -300,7 +308,7 @@ export default {
           if (a.finalsHist.length > 12) a.finalsHist.shift();
           a.lastFinal = transcript;
           a.liveInterim = '';
-          this.cueViaLm(transcript);
+          this.cueRequest(transcript);
         } else {
           a.interim++;
           a.lastDesc = 'interim: ' + transcript.slice(0, 24);
@@ -351,6 +359,7 @@ export default {
     a.on = false;
     a.frozenMs = Date.now() - a.t0;
     try { if (a.rec) a.rec.stop(); } catch (e) { /* ignore */ }
+    if (this._cue) this._cue.pending = null;
     a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
     this.asrRender();
   },
@@ -417,41 +426,81 @@ export default {
       this.setData({ asr3: 'LM avail ERR ' + String((e && e.message) || e).slice(0, 24) });
     });
   },
-  ensureCueSession() {
-    if (!this._lm || !this._lm.ok || this._lm.cue) return;
+  // ---- vrf-b11: cue engine (latest-only coalescing) ----
+  // At most one cue prompt is ever in flight. A final that arrives
+  // while busy overwrites the single pending slot; when the flight
+  // lands, the pending (newest) utterance fires immediately. The cue
+  // line reacts instantly ('💡考え中…') so the wearer always sees
+  // the glasses respond to speech, even before the cue itself lands.
+  cueState() {
+    if (!this._cue) this._cue = { busy: false, pending: null, sess: null, served: 0 };
+    return this._cue;
+  },
+  lmTimeout(p, ms) {
+    return Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+    ]);
+  },
+  cueSession() {
+    const c = this.cueState();
+    if (c.sess && c.served < 6) return Promise.resolve(c.sess);
     const sys = 'あなたは会話の補助キュー係です。書き起こしを受け取り、最新の発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。';
-    const keep = (s) => { if (s) this._lm.cue = s; };
-    this.lmQueue(() => LanguageModel.create({ systemPrompt: sys })).then(keep).catch(() => {
-      this.lmQueue(() => LanguageModel.create()).then(keep).catch(() => { /* cues stay off */ });
+    const mk = (opts) => this.lmTimeout(this.lmQueue(() => LanguageModel.create(opts)), 5000);
+    return mk({ systemPrompt: sys }).catch(() => mk(undefined)).then((s) => {
+      if (!s) return null;
+      if (c.sess && c.sess !== s) { try { if (c.sess.destroy) c.sess.destroy(); } catch (e) { /* ignore */ } }
+      c.sess = s;
+      c.served = 0;
+      return s;
+    }).catch(() => null);
+  },
+  cueRequest(text) {
+    if (!this._lm || !this._lm.ok) return;
+    const c = this.cueState();
+    this.setData({ asr4: '💡考え中…' });
+    if (c.busy) { c.pending = text; return; }
+    this.cueFire();
+  },
+  cueFire() {
+    const c = this.cueState();
+    const a = this._asr;
+    if (!a) { c.busy = false; return; }
+    c.busy = true;
+    c.served++;
+    const t0 = Date.now();
+    this.cueSession().then((sess) => {
+      if (!sess) {
+        this.setData({ asr4: '💡 (LMなし)' });
+        this.cueDone();
+        return;
+      }
+      const convo = a.finalsHist.slice(-5).join('\n');
+      this.lmTimeout(this.lmThen(() => sess.prompt('会話の書き起こし（最新が最後）:\n' + convo)), 8000).then((out) => {
+        let cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
+        const sec = ((Date.now() - t0) / 1000).toFixed(1);
+        if (!cue || cue === 'NONE') {
+          this.setData({ asr4: '💡なし (' + sec + 's)' });
+        } else {
+          this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
+        }
+        this.cueDone();
+      }).catch((e) => {
+        this.setData({ asr4: '💡 ERR ' + String((e && e.message) || e).slice(0, 22) });
+        this.cueDone();
+      });
     });
   },
-  cueViaLm(text) {
-    const a = this._asr;
-    if (!a || !this._lm || !this._lm.ok || !this._lm.cue) return;
-    const seq = ++a.cueSeq;
-    const sess = this._lm.cue;
-    const t0 = Date.now();
-    const convo = a.finalsHist.slice(-5).join('\n');
-    this.lmQueue(() => {
-      // A newer final already superseded this cue while it waited in
-      // the queue — skip the prompt entirely instead of burning a
-      // serialized round trip on a stale utterance.
-      if (!this._asr || this._asr.cueSeq !== seq) return null;
-      return sess.prompt('会話の書き起こし（最新が最後）:\n' + convo);
-    }).then((out) => {
-      if (out === null || !this._asr || this._asr.cueSeq !== seq) return;
-      const cue = String(out || '').trim().replace(/\s+/g, ' ');
-      const sec = ((Date.now() - t0) / 1000).toFixed(1);
-      if (!cue || cue === 'NONE') {
-        this.setData({ asr4: '💡なし (' + sec + 's)' });
-      } else {
-        this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
-      }
-    }).catch((e) => {
-      if (this._asr && this._asr.cueSeq === seq) {
-        this.setData({ asr4: '💡 ERR ' + String((e && e.message) || e).slice(0, 22) });
-      }
-    });
+  cueDone() {
+    const c = this.cueState();
+    c.busy = false;
+    if (c.pending !== null && this._asr && this._asr.on) {
+      c.pending = null;
+      this.setData({ asr4: '💡考え中…' });
+      this.cueFire();
+    } else {
+      c.pending = null;
+    }
   },
   runTest() {
     const now = Date.now();
