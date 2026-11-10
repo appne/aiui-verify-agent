@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b15: display rework #3 (user requests after the b14 device
+// test — readable, though not while walking; and the log's last
+// line was JUST cut off at the bottom). Removed two lines above
+// the scroll area, which also fixes the cutoff: (1) the dedicated
+// 'LM: avail=…' line — the probe latency now rides at the end of
+// the ASR line (' LM1.6s'; failures show ' LM:NG' plus a ⚠ log
+// entry); (2) the live-caption line under it, which duplicated
+// the ASR status line's final/interim text. Layout: think / title
+// / ASR counters+LM / ASR last event / 12-line pair log.
 // vrf-b14: display rework #2 (user request after the b13 device
 // test — "結構面白い" but the 24 px log text overflowed the
 // screen). Layout now: think line (top-left) / title at HALF size
@@ -70,10 +79,10 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b14',
+    build: 'vrf-b15',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
-    asr2: '', asr3: '', asr5: '',
+    asr2: '',
     log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
     log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
   },
@@ -94,11 +103,9 @@ export default {
       asr1: 'ASR #' + a.idx + ' ' + this.fmtT(el) +
         ' i' + a.interim + ' f' + a.finals +
         ' rst' + a.restarts + ' err' + a.errors +
-        ' max' + (a.sessMax / 1000).toFixed(1) + 's',
-      asr2: lastDesc || a.lastDesc || '',
-      asr5: a.liveInterim
-        ? '… ' + a.liveInterim.slice(0, 34)
-        : (a.lastFinal ? '🗣 ' + a.lastFinal.slice(0, 34) : '')
+        ' max' + (a.sessMax / 1000).toFixed(1) + 's' +
+        (this._lmInfo || ''),
+      asr2: lastDesc || a.lastDesc || ''
     };
     this.setData(patch);
   },
@@ -243,41 +250,40 @@ export default {
     this._lmQ = p.then(() => {}, () => {});
     return p;
   },
+  // vrf-b15: the probe no longer owns a display line. Its latency
+  // rides at the end of the ASR line via _lmInfo; failures also drop
+  // a ⚠ entry into the reply log so they stay visible.
+  lmInfoRender() {
+    if (this._asr) { this.asrRender(); return; }
+    this.setData({ asr1: 'ASR: Enter = loop start/stop' + (this._lmInfo || '') });
+  },
+  lmFail(msg) {
+    this._lm = { ok: false };
+    this._lmInfo = ' LM:NG';
+    this.lmInfoRender();
+    this.cueLogPush('⚠ LM ' + msg);
+  },
   probeLm() {
-    if (typeof Promise === 'undefined') {
-      this._lm = { ok: false };
-      this.setData({ asr3: 'LM: no Promise in runtime' });
-      return;
-    }
-    if (typeof LanguageModel === 'undefined') {
-      this._lm = { ok: false };
-      this.setData({ asr3: 'LM: undefined (no global)' });
-      return;
-    }
-    this.setData({ asr3: 'LM: probing...' });
+    if (typeof Promise === 'undefined') { this.lmFail('no Promise'); return; }
+    if (typeof LanguageModel === 'undefined') { this.lmFail('undefined'); return; }
     this.lmThen(() => LanguageModel.availability()).then((avail) => {
-      if (avail === 'unavailable') {
-        this._lm = { ok: false };
-        this.setData({ asr3: 'LM: avail=unavailable' });
-        return;
-      }
+      if (avail === 'unavailable') { this.lmFail('unavailable'); return; }
       const t0 = Date.now();
       this.lmQueue(() => LanguageModel.create()).then((session) => {
         this._lm = { ok: true, probe: session };
         this.lmQueue(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
           const sec = ((Date.now() - t0) / 1000).toFixed(1);
-          this.setData({ asr3: 'LM: avail=' + String(avail) + ' ' + sec + 's' });
+          this._lmInfo = ' LM' + sec + 's';
+          this.lmInfoRender();
           this.cueLogPush('LM: ' + String(out).trim().slice(0, 28));
         }).catch((e) => {
-          this.setData({ asr3: 'LM prompt ERR ' + String((e && e.message) || e).slice(0, 24) });
+          this.lmFail('prompt ' + String((e && e.message) || e).slice(0, 18));
         });
       }).catch((e) => {
-        this._lm = { ok: false };
-        this.setData({ asr3: 'LM create ERR ' + String((e && e.message) || e).slice(0, 24) });
+        this.lmFail('create ' + String((e && e.message) || e).slice(0, 18));
       });
     }).catch((e) => {
-      this._lm = { ok: false };
-      this.setData({ asr3: 'LM avail ERR ' + String((e && e.message) || e).slice(0, 24) });
+      this.lmFail('avail ' + String((e && e.message) || e).slice(0, 18));
     });
   },
   // ---- vrf-b12: cue engine v3 (debounce + disposable sessions) ----
@@ -421,8 +427,6 @@ export default {
     <text class="title">Verify {{ build }}</text>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
-    <text class="line sub">{{ asr3 }}</text>
-    <text class="line sub">{{ asr5 }}</text>
     <text class="line cue">{{ log1 }}</text>
     <text class="line cue">{{ log2 }}</text>
     <text class="line cue">{{ log3 }}</text>
