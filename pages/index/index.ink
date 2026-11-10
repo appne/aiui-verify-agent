@@ -5,6 +5,20 @@
 </script>
 
 <script setup>
+// vrf-b19: alphabet-final auto-translation (device findings +
+// user instruction after the b18 test). FINDING: even in JA mode
+// the recognizer transcribed English speech AS ENGLISH — the
+// ja-JP lang setting does not lock it. And the b17/b18 cue design
+// only ever translated the LATEST final after a pause, dropping
+// earlier foreign utterances. User instruction: when a final is
+// all-alphabet, send it to the AI without waiting for the batch
+// and translate it regardless of content. So: alphabet-only
+// finals (printable ASCII with >=2 letters) bypass the assist
+// lane entirely and enter a FIFO translation queue (trq) that
+// runs immediately, one pair per utterance, mutually exclusive
+// with the assist lane (trBusy/busy cross-checks). The explicit
+// language cycle stays for non-Latin scripts (ZH/KO), whose
+// transcription behaviour is still unverified.
 // vrf-b18: FOREIGN-LANGUAGE mode spike (user request, corrected
 // from 'English' to 'foreign language' in general: if the
 // conversation partner speaks a foreign language, show a Japanese
@@ -119,7 +133,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b18',
+    build: 'vrf-b19',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -261,6 +275,7 @@ export default {
     if (this._cue) {
       if (this._cue.timer) { clearTimeout(this._cue.timer); this._cue.timer = null; }
       this._cue.dirty = false;
+      this._cue.trq = [];
       this._cue.seq++;
     }
     this.thinkOff();
@@ -360,7 +375,7 @@ export default {
   // timed-out session can never poison the next cue — b11's ERR
   // timeout → busy-session ERR cascade is structurally impossible.
   cueState() {
-    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '' };
+    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '', trq: [], trBusy: false };
     return this._cue;
   },
   // ---- vrf-b13: thinking indicator + reply log ----
@@ -401,9 +416,23 @@ export default {
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
     ]);
   },
+  // vrf-b19: an all-alphabet final (printable ASCII, >=2 letters)
+  // is foreign speech: translate it, don't assist-judge it.
+  isAlphaFinal(text) {
+    if (!text || !/^[\x20-\x7E]+$/.test(text)) return false;
+    const letters = text.match(/[A-Za-z]/g);
+    return !!letters && letters.length >= 2;
+  },
   cueRequest(text) {
     if (!this._lm || !this._lm.ok) return;
     const c = this.cueState();
+    if (this.isAlphaFinal(text)) {
+      this.thinkOn();
+      c.trq.push(text);
+      if (c.trq.length > 6) c.trq.shift();
+      this.trPump();
+      return;
+    }
     this.thinkOn();
     c.dirty = true;
     if (c.timer) clearTimeout(c.timer);
@@ -412,8 +441,50 @@ export default {
   cueMaybe() {
     const c = this.cueState();
     if (c.busy || !c.dirty) return;
+    if (c.trBusy) {
+      if (c.timer) clearTimeout(c.timer);
+      c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 400);
+      return;
+    }
     if (!this._asr || !this._asr.on) { c.dirty = false; return; }
     this.cueFire();
+  },
+  // vrf-b19: FIFO translation lane. Each queued utterance gets its
+  // own disposable-session translation and its own pair, in order.
+  trPump() {
+    const c = this.cueState();
+    if (c.busy || c.trBusy || !c.trq.length) return;
+    if (!this._asr || !this._asr.on) { c.trq = []; return; }
+    const q = c.trq.shift();
+    const seqAt = c.seq;
+    c.trBusy = true;
+    const t0 = Date.now();
+    const promptText = '次の外国語の発話を自然な日本語に訳してください。訳文だけを日本語60文字以内で返してください。装飾記号は使わないでください。\n' + q;
+    this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
+      if (!sess) throw new Error('create-null');
+      return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
+        try { if (sess.destroy) sess.destroy(); } catch (e) { /* ignore */ }
+        return out;
+      }).catch((e) => {
+        try { if (sess.destroy) sess.destroy(); } catch (e2) { /* ignore */ }
+        throw e;
+      });
+    }).then((out) => {
+      if (seqAt !== c.seq) return;
+      const txt = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
+      const sec = ((Date.now() - t0) / 1000).toFixed(1);
+      if (txt && txt !== 'NONE') {
+        this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + txt.slice(0, 44) + ' (' + sec + 's)');
+      }
+    }).catch((e) => {
+      if (seqAt !== c.seq) return;
+      this.cuePairPush('🗣 ' + q.slice(0, 40), '⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
+    }).then(() => {
+      c.trBusy = false;
+      if (c.trq.length) { this.trPump(); return; }
+      if (c.dirty) { this.cueMaybe(); return; }
+      if (!c.busy) this.thinkOff();
+    });
   },
   cueFire() {
     const c = this.cueState();
@@ -466,6 +537,8 @@ export default {
     if (c.dirty && this._asr && this._asr.on) {
       if (c.timer) clearTimeout(c.timer);
       c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 600);
+    } else if (c.trq && c.trq.length) {
+      this.trPump();
     } else {
       this.thinkOff();
     }
