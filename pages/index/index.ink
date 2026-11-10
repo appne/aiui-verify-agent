@@ -5,19 +5,24 @@
 </script>
 
 <script setup>
-// vrf-b8: ASR continuous-loop spike (Conversate feasibility, 2026-11-10).
-// Enter toggles a recognition loop: each SpeechRecognition session is
-// restarted synchronously from onend, with talk's known configuration
-// (ja-JP, interimResults=true, continuous=false, fresh instance per
-// session). The page counts sessions / restarts / interim vs final
-// results / errors, tracks the longest single session, and shows the
-// last 3 finals — answering: can sessions restart without a gesture,
-// do interim results actually arrive, how often does ASR cut, and
-// does it survive 15 minutes (auto-cap). Enter used to re-run the
-// camera shoot(); shoot still runs once from onLoad.
+// vrf-b9: LanguageModel probe + LM-backed cue spike (2026-11-11).
+// vrf-b8 proved the ASR loop: interim results stream in, one
+// continuous=false session delivers many finals, restarts are rare.
+// vrf-b9 adds two things:
+//  (1) an on-load probe of the built-in LanguageModel API
+//      (typeof / availability() / one timed Japanese prompt) shown
+//      on the asr3/asr4 lines;
+//  (2) when the probe passes, each ASR final is fed to a dedicated
+//      LanguageModel session that returns at most one short cue
+//      (term explanation / key point / suggested reply, or NONE),
+//      shown on asr4 with its latency; asr5 shows the live interim
+//      caption or the latest final. The Gemini /cue path on the
+//      laptop listener stays as the fallback if LM is unavailable.
+// Enter toggles the ASR loop as in vrf-b8; shoot still runs once
+// from onLoad.
 export default {
   data: {
-    build: 'vrf-b8',
+    build: 'vrf-b9',
     connType: 'tap: test',
     line1: 'BT forward check',
     line2: 'Enter = run fetch',
@@ -35,6 +40,7 @@ export default {
   onLoad() {
     this.refreshConn();
     this.probeApis();
+    setTimeout(() => this.probeLm(), 800);
     setTimeout(() => this.shoot(), 2500);
   },
   // Camera test (vrf-b6): the page now HAS a <camera> component.
@@ -228,9 +234,11 @@ export default {
         ' i' + a.interim + ' f' + a.finals +
         ' rst' + a.restarts + ' err' + a.errors +
         ' max' + (a.sessMax / 1000).toFixed(1) + 's',
-      asr2: lastDesc || a.lastDesc || ''
+      asr2: lastDesc || a.lastDesc || '',
+      asr5: a.liveInterim
+        ? '… ' + a.liveInterim.slice(0, 34)
+        : (a.lastFinal ? '🗣 ' + a.lastFinal.slice(0, 34) : '')
     };
-    for (let i = 0; i < 3; i++) patch['asr' + (3 + i)] = a.hist[i] || '';
     this.setData(patch);
   },
   toggleAsr() {
@@ -242,8 +250,10 @@ export default {
     this._asr = {
       on: true, idx: 0, t0: Date.now(), frozenMs: 0, sessT0: 0,
       interim: 0, finals: 0, restarts: 0, errors: 0, consecErr: 0,
-      sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: ''
+      sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: '',
+      finalsHist: [], cueSeq: 0, lastFinal: '', liveInterim: ''
     };
+    this.ensureCueSession();
     this.asrRender();
     this.asrStart();
   },
@@ -285,9 +295,15 @@ export default {
           a.hist.unshift(this.fmtT(Date.now() - a.t0) + ' ' + transcript.slice(0, 24));
           a.hist = a.hist.slice(0, 3);
           a.lastDesc = 'final: ' + transcript.slice(0, 26);
+          a.finalsHist.push(transcript);
+          if (a.finalsHist.length > 12) a.finalsHist.shift();
+          a.lastFinal = transcript;
+          a.liveInterim = '';
+          this.cueViaLm(transcript);
         } else {
           a.interim++;
           a.lastDesc = 'interim: ' + transcript.slice(0, 24);
+          a.liveInterim = transcript;
         }
         this.asrRender();
       } catch (e) {
@@ -336,6 +352,81 @@ export default {
     try { if (a.rec) a.rec.stop(); } catch (e) { /* ignore */ }
     a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
     this.asrRender();
+  },
+  // ---- vrf-b9: built-in LanguageModel probe + cue ----
+  // The blog-documented API is Chrome Prompt-API shaped and may return
+  // promises OR plain values depending on runtime version; lmThen
+  // normalizes both. All failures land on the asr3/asr4 lines so the
+  // glasses screen itself reports what the runtime supports.
+  lmThen(fn) {
+    try {
+      const r = fn();
+      if (r && typeof r.then === 'function') return r;
+      return Promise.resolve(r);
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  },
+  probeLm() {
+    if (typeof Promise === 'undefined') {
+      this._lm = { ok: false };
+      this.setData({ asr3: 'LM: no Promise in runtime' });
+      return;
+    }
+    if (typeof LanguageModel === 'undefined') {
+      this._lm = { ok: false };
+      this.setData({ asr3: 'LM: undefined (no global)' });
+      return;
+    }
+    this.setData({ asr3: 'LM: probing...' });
+    this.lmThen(() => LanguageModel.availability()).then((avail) => {
+      this.setData({ asr3: 'LM: avail=' + String(avail) });
+      if (avail === 'unavailable') { this._lm = { ok: false }; return; }
+      const t0 = Date.now();
+      this.lmThen(() => LanguageModel.create()).then((session) => {
+        this._lm = { ok: true, probe: session };
+        this.lmThen(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
+          const ms = Date.now() - t0;
+          this.setData({ asr4: 'LM ' + (ms / 1000).toFixed(1) + 's: ' + String(out).trim().slice(0, 28) });
+        }).catch((e) => {
+          this.setData({ asr4: 'LM prompt ERR ' + String((e && e.message) || e).slice(0, 24) });
+        });
+      }).catch((e) => {
+        this._lm = { ok: false };
+        this.setData({ asr3: 'LM create ERR ' + String((e && e.message) || e).slice(0, 24) });
+      });
+    }).catch((e) => {
+      this._lm = { ok: false };
+      this.setData({ asr3: 'LM avail ERR ' + String((e && e.message) || e).slice(0, 24) });
+    });
+  },
+  ensureCueSession() {
+    if (!this._lm || !this._lm.ok || this._lm.cue) return;
+    const sys = 'あなたは会話の補助キュー係です。書き起こしを受け取り、最新の発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。';
+    const keep = (s) => { if (s) this._lm.cue = s; };
+    this.lmThen(() => LanguageModel.create({ systemPrompt: sys })).then(keep).catch(() => {
+      this.lmThen(() => LanguageModel.create()).then(keep).catch(() => { /* cues stay off */ });
+    });
+  },
+  cueViaLm(text) {
+    const a = this._asr;
+    if (!a || !this._lm || !this._lm.ok || !this._lm.cue) return;
+    const seq = ++a.cueSeq;
+    const sess = this._lm.cue;
+    const t0 = Date.now();
+    const convo = a.finalsHist.slice(-5).join('\n');
+    this.lmThen(() => sess.prompt('会話の書き起こし（最新が最後）:\n' + convo)).then((out) => {
+      if (!this._asr || this._asr.cueSeq !== seq) return;
+      const cue = String(out || '').trim().replace(/\s+/g, ' ');
+      const sec = ((Date.now() - t0) / 1000).toFixed(1);
+      if (!cue || cue === 'NONE') {
+        this.setData({ asr4: '💡なし (' + sec + 's)' });
+      } else {
+        this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
+      }
+    }).catch(() => {
+      if (this._asr && this._asr.cueSeq === seq) this.setData({ asr4: '💡 ERR' });
+    });
   },
   runTest() {
     const now = Date.now();
