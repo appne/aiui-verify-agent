@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b13: display rework (user request after the b12 device test,
+// which PASSED — no more ERRs). The '💡考え中…' indicator moves to
+// its own line at the top-left and is ERASED when the cue settles
+// instead of being overwritten by the reply. AI replies become a
+// scrolling log: each cue is appended as an entry (last 5 shown,
+// chat order), and ArrowUp/ArrowDown page back/forward through the
+// history (kept to 30 entries) so past replies stay readable. NONE
+// results are not logged (nothing to read); ERRs are logged with a
+// ⚠ prefix so failures stay visible in context.
 // vrf-b12: cue engine v3 + legacy probe clutter removed (user call).
 // b11 device test: '💡考え中…' appeared instantly (good) but cues
 // mostly ended in ERR timeout / session errors and the thinking
@@ -52,9 +61,11 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b12',
+    build: 'vrf-b13',
+    think: '',
     asr1: 'ASR: Enter = loop start/stop',
-    asr2: '', asr3: '', asr4: '', asr5: ''
+    asr2: '', asr3: '', asr5: '',
+    log1: '', log2: '', log3: '', log4: '', log5: ''
   },
   _asr: null,
   onLoad() {
@@ -194,6 +205,7 @@ export default {
       this._cue.dirty = false;
       this._cue.seq++;
     }
+    this.thinkOff();
     a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
     this.asrRender();
   },
@@ -244,12 +256,10 @@ export default {
         this._lm = { ok: true, probe: session };
         this.lmQueue(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
           const sec = ((Date.now() - t0) / 1000).toFixed(1);
-          this.setData({
-            asr3: 'LM: avail=' + String(avail) + ' ' + sec + 's',
-            asr4: 'LM: ' + String(out).trim().slice(0, 28)
-          });
+          this.setData({ asr3: 'LM: avail=' + String(avail) + ' ' + sec + 's' });
+          this.cueLogPush('LM: ' + String(out).trim().slice(0, 28));
         }).catch((e) => {
-          this.setData({ asr4: 'LM prompt ERR ' + String((e && e.message) || e).slice(0, 24) });
+          this.setData({ asr3: 'LM prompt ERR ' + String((e && e.message) || e).slice(0, 24) });
         });
       }).catch((e) => {
         this._lm = { ok: false };
@@ -271,8 +281,32 @@ export default {
   // timed-out session can never poison the next cue — b11's ERR
   // timeout → busy-session ERR cascade is structurally impossible.
   cueState() {
-    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0 };
+    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0 };
     return this._cue;
+  },
+  // ---- vrf-b13: thinking indicator + reply log ----
+  thinkOn() { this.setData({ think: '💡考え中…' }); },
+  thinkOff() { this.setData({ think: '' }); },
+  cueLogPush(entry) {
+    const c = this.cueState();
+    c.log.push(entry);
+    if (c.log.length > 30) c.log.shift();
+    c.off = 0;
+    this.cueLogRender();
+  },
+  cueLogRender() {
+    const c = this.cueState();
+    const end = Math.max(0, c.log.length - c.off);
+    const win = c.log.slice(Math.max(0, end - 5), end);
+    const patch = {};
+    for (let i = 0; i < 5; i++) patch['log' + (i + 1)] = win[i] || '';
+    this.setData(patch);
+  },
+  cueScroll(dir) {
+    const c = this.cueState();
+    const maxOff = Math.max(0, c.log.length - 5);
+    c.off = Math.min(maxOff, Math.max(0, c.off + dir * 4));
+    this.cueLogRender();
   },
   lmTimeout(p, ms) {
     return Promise.race([
@@ -283,7 +317,7 @@ export default {
   cueRequest(text) {
     if (!this._lm || !this._lm.ok) return;
     const c = this.cueState();
-    this.setData({ asr4: '💡考え中…' });
+    this.thinkOn();
     c.dirty = true;
     if (c.timer) clearTimeout(c.timer);
     c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, this.cueDebounceMs || 1200);
@@ -317,16 +351,15 @@ export default {
       if (seq === c.seq) {
         const cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
-        if (!cue || cue === 'NONE') {
-          this.setData({ asr4: '💡なし (' + sec + 's)' });
-        } else {
-          this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
+        // NONE leaves no log entry — there is no reply to read back.
+        if (cue && cue !== 'NONE') {
+          this.cueLogPush('💡 ' + cue.slice(0, 30) + ' (' + sec + 's)');
         }
       }
       this.cueDone();
     }).catch((e) => {
       if (seq === c.seq) {
-        this.setData({ asr4: '💡 ERR ' + String((e && e.message) || e).slice(0, 22) });
+        this.cueLogPush('⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
       }
       this.cueDone();
     });
@@ -335,10 +368,14 @@ export default {
     const c = this.cueState();
     c.busy = false;
     // Finals arrived while this cue was in flight: take one short
-    // breath, then cue the newest context (never a backlog).
+    // breath, then cue the newest context (never a backlog). The
+    // thinking indicator stays up across that follow-up cue; it is
+    // erased only when the engine goes idle.
     if (c.dirty && this._asr && this._asr.on) {
       if (c.timer) clearTimeout(c.timer);
       c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 600);
+    } else {
+      this.thinkOff();
     }
   },
   onKeyUp(event) {
@@ -346,8 +383,13 @@ export default {
       event.preventDefault();
       this.toggleAsr();
     }
-    if (event.code === 'ArrowUp' || event.code === 'ArrowDown') {
+    if (event.code === 'ArrowUp') {
       event.preventDefault();
+      this.cueScroll(1);
+    }
+    if (event.code === 'ArrowDown') {
+      event.preventDefault();
+      this.cueScroll(-1);
     }
   }
 }
@@ -355,12 +397,17 @@ export default {
 
 <page>
   <view class="container">
+    <text class="line sub">{{ think }}</text>
     <text class="title">Verify {{ build }}</text>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
     <text class="line sub">{{ asr3 }}</text>
-    <text class="line cue">{{ asr4 }}</text>
     <text class="line sub">{{ asr5 }}</text>
+    <text class="line cue">{{ log1 }}</text>
+    <text class="line cue">{{ log2 }}</text>
+    <text class="line cue">{{ log3 }}</text>
+    <text class="line cue">{{ log4 }}</text>
+    <text class="line cue">{{ log5 }}</text>
   </view>
 </page>
 
