@@ -5,9 +5,19 @@
 </script>
 
 <script setup>
+// vrf-b8: ASR continuous-loop spike (Conversate feasibility, 2026-11-10).
+// Enter toggles a recognition loop: each SpeechRecognition session is
+// restarted synchronously from onend, with talk's known configuration
+// (ja-JP, interimResults=true, continuous=false, fresh instance per
+// session). The page counts sessions / restarts / interim vs final
+// results / errors, tracks the longest single session, and shows the
+// last 3 finals — answering: can sessions restart without a gesture,
+// do interim results actually arrive, how often does ASR cut, and
+// does it survive 15 minutes (auto-cap). Enter used to re-run the
+// camera shoot(); shoot still runs once from onLoad.
 export default {
   data: {
-    build: 'vrf-b7',
+    build: 'vrf-b8',
     connType: 'tap: test',
     line1: 'BT forward check',
     line2: 'Enter = run fetch',
@@ -16,9 +26,12 @@ export default {
     shot: 'shot: idle',
     shot2: '',
     locRes: '',
+    asr1: 'ASR: Enter = loop start/stop',
+    asr2: '', asr3: '', asr4: '', asr5: '',
     k1: '', k2: '', k3: '', k4: '', k5: ''
   },
   _lastRun: 0,
+  _asr: null,
   onLoad() {
     this.refreshConn();
     this.probeApis();
@@ -201,6 +214,129 @@ export default {
       } catch (e) { setRes('geo exception'); }
     }
   },
+  // ---- vrf-b8: ASR continuous-loop spike ----
+  fmtT(ms) {
+    const s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  },
+  asrRender(lastDesc) {
+    const a = this._asr;
+    if (!a) return;
+    const el = a.on ? Date.now() - a.t0 : a.frozenMs;
+    const patch = {
+      asr1: 'ASR #' + a.idx + ' ' + this.fmtT(el) +
+        ' i' + a.interim + ' f' + a.finals +
+        ' rst' + a.restarts + ' err' + a.errors +
+        ' max' + (a.sessMax / 1000).toFixed(1) + 's',
+      asr2: lastDesc || a.lastDesc || ''
+    };
+    for (let i = 0; i < 3; i++) patch['asr' + (3 + i)] = a.hist[i] || '';
+    this.setData(patch);
+  },
+  toggleAsr() {
+    if (this._asr && this._asr.on) { this.asrStop('manual'); return; }
+    if (typeof SpeechRecognition === 'undefined') {
+      this.setData({ asr1: 'ASR: SpeechRecognition n/a' });
+      return;
+    }
+    this._asr = {
+      on: true, idx: 0, t0: Date.now(), frozenMs: 0, sessT0: 0,
+      interim: 0, finals: 0, restarts: 0, errors: 0, consecErr: 0,
+      sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: ''
+    };
+    this.asrRender();
+    this.asrStart();
+  },
+  asrStart() {
+    const a = this._asr;
+    if (!a || !a.on) return;
+    let rec = null;
+    try {
+      rec = new SpeechRecognition();
+    } catch (e) {
+      a.errors++;
+      a.lastDesc = 'ctor NG: ' + String(e).slice(0, 26);
+      this.asrStop('ctor');
+      return;
+    }
+    a.rec = rec;
+    a.idx++;
+    a.sessT0 = Date.now();
+    try { rec.lang = 'ja-JP'; } catch (e) { /* ignore */ }
+    try { rec.interimResults = true; } catch (e) { /* ignore */ }
+    try { rec.continuous = false; } catch (e) { /* ignore */ }
+    rec.onresult = (ev) => {
+      try {
+        let transcript = '';
+        let isFinal = false;
+        if (ev && typeof ev.transcript === 'string') {
+          transcript = ev.transcript;
+          isFinal = true;
+        } else if (ev && ev.results && ev.results.length) {
+          const last = ev.results[ev.results.length - 1];
+          const alt = last && last[0];
+          transcript = (alt && alt.transcript) || '';
+          isFinal = !!(last && last.isFinal);
+        }
+        if (!transcript) return;
+        a.consecErr = 0;
+        if (isFinal) {
+          a.finals++;
+          a.hist.unshift(this.fmtT(Date.now() - a.t0) + ' ' + transcript.slice(0, 24));
+          a.hist = a.hist.slice(0, 3);
+          a.lastDesc = 'final: ' + transcript.slice(0, 26);
+        } else {
+          a.interim++;
+          a.lastDesc = 'interim: ' + transcript.slice(0, 24);
+        }
+        this.asrRender();
+      } catch (e) {
+        a.lastDesc = 'onresult err';
+        this.asrRender();
+      }
+    };
+    rec.onerror = (ev) => {
+      const msg = String((ev && (ev.error || ev.errMsg)) || 'unknown');
+      a.errors++;
+      a.consecErr++;
+      a.lastDesc = 'err: ' + msg.slice(0, 30);
+      if (msg === 'not-allowed' || msg === 'service-not-allowed' ||
+          msg === 'language-not-supported') {
+        a.fatal = msg;
+      }
+      this.asrRender();
+    };
+    rec.onend = () => {
+      const dur = Date.now() - a.sessT0;
+      if (dur > a.sessMax) a.sessMax = dur;
+      if (!a.on) return;
+      if (a.fatal) { this.asrStop('fatal ' + a.fatal); return; }
+      if (Date.now() - a.t0 > 900000) { this.asrStop('CAP 15min'); return; }
+      if (a.consecErr >= 5) { this.asrStop('errors x' + a.consecErr); return; }
+      a.restarts++;
+      this.asrRender();
+      this.asrStart();
+    };
+    try {
+      rec.start();
+    } catch (e) {
+      a.errors++;
+      a.consecErr++;
+      a.lastDesc = 'start NG: ' + String(e).slice(0, 24);
+      if (a.consecErr >= 5) { this.asrStop('start NG x5'); return; }
+      this.asrRender();
+      setTimeout(() => this.asrStart(), 500);
+    }
+  },
+  asrStop(reason) {
+    const a = this._asr;
+    if (!a) return;
+    a.on = false;
+    a.frozenMs = Date.now() - a.t0;
+    try { if (a.rec) a.rec.stop(); } catch (e) { /* ignore */ }
+    a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
+    this.asrRender();
+  },
   runTest() {
     const now = Date.now();
     if (now - this._lastRun < 1500) return;
@@ -242,7 +378,7 @@ export default {
   onKeyUp(event) {
     if (event.code === 'Enter' || event.code === 'GlobalHook') {
       event.preventDefault();
-      this.shoot();
+      this.toggleAsr();
     }
     if (event.code === 'ArrowUp' || event.code === 'ArrowDown') {
       event.preventDefault();
@@ -262,6 +398,11 @@ export default {
     <text class="line sub">{{ shot }}</text>
     <text class="line sub">{{ shot2 }}</text>
     <text class="line sub">{{ locRes }}</text>
+    <text class="line sub">{{ asr1 }}</text>
+    <text class="line sub">{{ asr2 }}</text>
+    <text class="line sub">{{ asr3 }}</text>
+    <text class="line sub">{{ asr4 }}</text>
+    <text class="line sub">{{ asr5 }}</text>
     <text class="line keys">{{ k1 }}</text>
     <text class="line keys">{{ k2 }}</text>
     <text class="line keys">{{ k3 }}</text>
