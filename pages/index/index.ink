@@ -5,6 +5,16 @@
 </script>
 
 <script setup>
+// vrf-b21: last-line cutoff, round 2 (device report on b20: when
+// the real-time line wraps to 2 lines, the scroll area shifts and
+// the last line disappears). Root cause: the log window counted
+// LOGICAL lines (12) while entries and status lines WRAP — the
+// b15 fix only bought slack for the typical case. Now the log
+// render budgets VISUAL lines (estLines: ASCII 9px / wide 15px
+// over a 436px measure, budget 19 incl. one header wrap of
+// slack), the ASR counter line is compressed (r/e/m labels,
+// integer max), and the final/interim desc slices drop 26/24 ->
+// 18 chars so the status lines stop wrapping in the first place.
 // vrf-b20: translation-lane fixes (device report on b19: term
 // cues worked but English was NEVER translated). Two defects:
 // (1) isAlphaFinal demanded pure printable ASCII — but a Japanese
@@ -146,7 +156,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b20',
+    build: 'vrf-b21',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -169,8 +179,8 @@ export default {
     const patch = {
       asr1: 'ASR #' + a.idx + ' ' + this.fmtT(el) +
         ' i' + a.interim + ' f' + a.finals +
-        ' rst' + a.restarts + ' err' + a.errors +
-        ' max' + (a.sessMax / 1000).toFixed(1) + 's' +
+        ' r' + a.restarts + ' e' + a.errors +
+        ' m' + Math.round(a.sessMax / 1000) + 's' +
         this.langTag() +
         (this._lmInfo || ''),
       asr2: lastDesc || a.lastDesc || ''
@@ -229,7 +239,7 @@ export default {
           a.finals++;
           a.hist.unshift(this.fmtT(Date.now() - a.t0) + ' ' + transcript.slice(0, 24));
           a.hist = a.hist.slice(0, 3);
-          a.lastDesc = 'final: ' + transcript.slice(0, 26);
+          a.lastDesc = 'final: ' + transcript.slice(0, 18);
           a.finalsHist.push(transcript);
           if (a.finalsHist.length > 12) a.finalsHist.shift();
           a.lastFinal = transcript;
@@ -237,7 +247,7 @@ export default {
           this.cueRequest(transcript);
         } else {
           a.interim++;
-          a.lastDesc = 'interim: ' + transcript.slice(0, 24);
+          a.lastDesc = 'interim: ' + transcript.slice(0, 18);
           a.liveInterim = transcript;
         }
         this.asrRender();
@@ -410,10 +420,30 @@ export default {
     c.off = 0;
     this.cueLogRender();
   },
+  // vrf-b21: estimated VISUAL lines of one log entry at 15px
+  // (ASCII ~9px, wide chars 15px, measured against the 448px
+  // canvas with a small safety margin).
+  estLines(s) {
+    let w = 0;
+    const str = String(s || '');
+    for (let i = 0; i < str.length; i++) w += (str.charCodeAt(i) < 0x80) ? 9 : 15;
+    return Math.max(1, Math.ceil(w / 436));
+  },
   cueLogRender() {
     const c = this.cueState();
     const end = Math.max(0, c.log.length - c.off);
-    const win = c.log.slice(Math.max(0, end - 12), end);
+    // Budget the window by visual lines (19) so wrapped entries
+    // can no longer push the last line off-screen; at most 12
+    // entries, always including the newest one.
+    let used = 0;
+    let start = end;
+    while (start > 0 && end - start < 12) {
+      const w = this.estLines(c.log[start - 1]);
+      if (start < end && used + w > 19) break;
+      used += w;
+      start--;
+    }
+    const win = c.log.slice(start, end);
     const patch = {};
     for (let i = 0; i < 12; i++) patch['log' + (i + 1)] = win[i] || '';
     this.setData(patch);
