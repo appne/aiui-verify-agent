@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b17: cue PURPOSE correction (user, after the b15 device
+// conversation test): the point is NOT to converse with the LM —
+// it listens to the conversation and assists about the CONTENT:
+// when a difficult keyword/concept appears, show its meaning;
+// otherwise useful background. The b15 cues had drifted into
+// chat-partner behaviour (greeting replies, suggesting what to
+// say next) because the prompt offered '返答の候補'. The new
+// prompt forbids replying to the speaker and suggesting replies;
+// greetings/small talk get NONE.
 // vrf-b16: gesture disambiguation (user report on b15: taps AND
 // swipes kept flipping the ASR loop between starting/stop — the
 // b15 device capture even shows the conversation ending in
@@ -92,7 +101,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b16',
+    build: 'vrf-b17',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -376,7 +385,7 @@ export default {
     const q = a.finalsHist.length ? a.finalsHist[a.finalsHist.length - 1] : '';
     c.curQ = q;
     const convo = a.finalsHist.slice(-3).join('\n');
-    const promptText = '会話補助のキュー係として、書き起こし（最新が最後）の最新発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
+    const promptText = 'あなたは会話を聞いているだけの補助AIです。発言者への返答や、次に言うことの提案は絶対にしないでください。書き起こし（最新が最後）の中に難しい専門用語・概念が出てきたらその意味を、なければ話題の理解に役立つ背景知識があればそれを、日本語30文字以内で1つだけ出してください。挨拶・相づち・雑談など補助が不要なら NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
     this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
       if (!sess) throw new Error('create-null');
       return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
