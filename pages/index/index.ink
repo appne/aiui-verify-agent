@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b14: display rework #2 (user request after the b13 device
+// test — "結構面白い" but the 24 px log text overflowed the
+// screen). Layout now: think line (top-left) / title at HALF size
+// (26→13 px) / the ASR live-info lines unchanged / the scroll
+// area in zaisen's footer size (15 px, lh 17). The log shows
+// PAIRS: the utterance that triggered the cue (🗣, the latest
+// final — the AI also receives the previous 2 finals as context)
+// and the AI's reply (💡), 12 lines visible (6 pairs), history 40
+// lines, ArrowUp/Down paging as in b13. NONE still leaves no pair.
 // vrf-b13: display rework (user request after the b12 device test,
 // which PASSED — no more ERRs). The '💡考え中…' indicator moves to
 // its own line at the top-left and is ERASED when the cue settles
@@ -61,11 +70,12 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b13',
+    build: 'vrf-b14',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '', asr3: '', asr5: '',
-    log1: '', log2: '', log3: '', log4: '', log5: ''
+    log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
+    log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
   },
   _asr: null,
   onLoad() {
@@ -281,7 +291,7 @@ export default {
   // timed-out session can never poison the next cue — b11's ERR
   // timeout → busy-session ERR cascade is structurally impossible.
   cueState() {
-    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0 };
+    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '' };
     return this._cue;
   },
   // ---- vrf-b13: thinking indicator + reply log ----
@@ -290,21 +300,29 @@ export default {
   cueLogPush(entry) {
     const c = this.cueState();
     c.log.push(entry);
-    if (c.log.length > 30) c.log.shift();
+    if (c.log.length > 40) c.log.shift();
+    c.off = 0;
+    this.cueLogRender();
+  },
+  cuePairPush(qLine, aLine) {
+    const c = this.cueState();
+    c.log.push(qLine);
+    c.log.push(aLine);
+    while (c.log.length > 40) c.log.shift();
     c.off = 0;
     this.cueLogRender();
   },
   cueLogRender() {
     const c = this.cueState();
     const end = Math.max(0, c.log.length - c.off);
-    const win = c.log.slice(Math.max(0, end - 5), end);
+    const win = c.log.slice(Math.max(0, end - 12), end);
     const patch = {};
-    for (let i = 0; i < 5; i++) patch['log' + (i + 1)] = win[i] || '';
+    for (let i = 0; i < 12; i++) patch['log' + (i + 1)] = win[i] || '';
     this.setData(patch);
   },
   cueScroll(dir) {
     const c = this.cueState();
-    const maxOff = Math.max(0, c.log.length - 5);
+    const maxOff = Math.max(0, c.log.length - 12);
     c.off = Math.min(maxOff, Math.max(0, c.off + dir * 4));
     this.cueLogRender();
   },
@@ -336,6 +354,8 @@ export default {
     c.dirty = false;
     const seq = ++c.seq;
     const t0 = Date.now();
+    const q = a.finalsHist.length ? a.finalsHist[a.finalsHist.length - 1] : '';
+    c.curQ = q;
     const convo = a.finalsHist.slice(-3).join('\n');
     const promptText = '会話補助のキュー係として、書き起こし（最新が最後）の最新発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
     this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
@@ -351,15 +371,15 @@ export default {
       if (seq === c.seq) {
         const cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
-        // NONE leaves no log entry — there is no reply to read back.
+        // NONE leaves no pair — there is no reply to read back.
         if (cue && cue !== 'NONE') {
-          this.cueLogPush('💡 ' + cue.slice(0, 30) + ' (' + sec + 's)');
+          this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)');
         }
       }
       this.cueDone();
     }).catch((e) => {
       if (seq === c.seq) {
-        this.cueLogPush('⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
+        this.cuePairPush('🗣 ' + q.slice(0, 40), '⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
       }
       this.cueDone();
     });
@@ -408,6 +428,13 @@ export default {
     <text class="line cue">{{ log3 }}</text>
     <text class="line cue">{{ log4 }}</text>
     <text class="line cue">{{ log5 }}</text>
+    <text class="line cue">{{ log6 }}</text>
+    <text class="line cue">{{ log7 }}</text>
+    <text class="line cue">{{ log8 }}</text>
+    <text class="line cue">{{ log9 }}</text>
+    <text class="line cue">{{ log10 }}</text>
+    <text class="line cue">{{ log11 }}</text>
+    <text class="line cue">{{ log12 }}</text>
   </view>
 </page>
 
@@ -423,9 +450,9 @@ export default {
 
 .title {
   color: #40FF5E;
-  font-size: 26px;
-  line-height: 30px;
-  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 16px;
+  margin-bottom: 4px;
 }
 
 .line {
@@ -442,8 +469,8 @@ export default {
 
 .cue {
   color: #40FF5E;
-  font-size: 24px;
-  line-height: 30px;
+  font-size: 15px;
+  line-height: 17px;
 }
 
 </style>
