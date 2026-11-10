@@ -5,6 +5,9 @@
 </script>
 
 <script setup>
+// vrf-b10: LM calls serialized + cue error text shown; layout slimmed
+// (ASR/LM block moved under the title, probe clutter compressed) so
+// the LM response line is actually readable on the glasses.
 // vrf-b9: LanguageModel probe + LM-backed cue spike (2026-11-11).
 // vrf-b8 proved the ASR loop: interim results stream in, one
 // continuous=false session delivers many finals, restarts are rare.
@@ -22,9 +25,9 @@
 // from onLoad.
 export default {
   data: {
-    build: 'vrf-b9',
+    build: 'vrf-b10',
     connType: 'tap: test',
-    line1: 'BT forward check',
+    line1: 'tap: fetch test',
     line2: 'Enter = run fetch',
     probe: 'loc: ...',
     cam: 'cam: ...',
@@ -92,7 +95,7 @@ export default {
       };
       const ret = ctx.takePhoto({ quality: 'high' });
       if (ret && typeof ret.then === 'function') {
-        ret.then((r) => finish('PHOTO OK', describe(r)))
+        ret.then((r) => finish('PHOTO OK ' + ((r && r.data && r.data.byteLength) || 0) + 'B', ''))
           .catch((e) => finish('PHOTO FAIL (promise)', String((e && e.errMsg) || e).slice(0, 38)));
       } else {
         finish('takePhoto: no promise', 'ret=' + Object.prototype.toString.call(ret));
@@ -193,9 +196,7 @@ export default {
         ' svI' + mark(has(wx, 'saveImageToPhotosAlbum')) +
         ' scC' + mark(has(wx, 'scanCode')) +
         ' gRM' + mark(has(wx, 'getRecorderManager')) +
-        ' cVC' + mark(has(wx, 'createVideoContext')) +
-        ' | oCam' + mark(hasO(wx, 'camera')) +
-        ' oSp' + mark(hasO(wx, 'speech'))
+        ' cVC' + mark(has(wx, 'createVideoContext'))
     });
     // Live attempts, only where the API exists.
     const setRes = (s) => this.setData({ locRes: s });
@@ -212,7 +213,7 @@ export default {
       let answered = false;
       try {
         navigator.geolocation.getCurrentPosition(
-          (p) => { answered = true; setRes('geo ok ' + p.coords.latitude + ',' + p.coords.longitude); },
+          (p) => { answered = true; setRes('geo ok ' + p.coords.latitude.toFixed(4) + ',' + p.coords.longitude.toFixed(4)); },
           (e) => { answered = true; setRes('geo err ' + (e && e.code)); },
           { timeout: 6000 }
         );
@@ -367,6 +368,16 @@ export default {
       return Promise.reject(e);
     }
   },
+  // Serialize every LM call (probe/cue create+prompt) through one
+  // chain: vrf-b9's cue prompt failed with a bare ERR while the probe
+  // prompt may still have been in flight — the runtime may allow only
+  // one active LM operation at a time.
+  lmQueue(fn) {
+    const prev = this._lmQ || Promise.resolve();
+    const p = prev.then(() => this.lmThen(fn), () => this.lmThen(fn));
+    this._lmQ = p.then(() => {}, () => {});
+    return p;
+  },
   probeLm() {
     if (typeof Promise === 'undefined') {
       this._lm = { ok: false };
@@ -380,14 +391,20 @@ export default {
     }
     this.setData({ asr3: 'LM: probing...' });
     this.lmThen(() => LanguageModel.availability()).then((avail) => {
-      this.setData({ asr3: 'LM: avail=' + String(avail) });
-      if (avail === 'unavailable') { this._lm = { ok: false }; return; }
+      if (avail === 'unavailable') {
+        this._lm = { ok: false };
+        this.setData({ asr3: 'LM: avail=unavailable' });
+        return;
+      }
       const t0 = Date.now();
-      this.lmThen(() => LanguageModel.create()).then((session) => {
+      this.lmQueue(() => LanguageModel.create()).then((session) => {
         this._lm = { ok: true, probe: session };
-        this.lmThen(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
-          const ms = Date.now() - t0;
-          this.setData({ asr4: 'LM ' + (ms / 1000).toFixed(1) + 's: ' + String(out).trim().slice(0, 28) });
+        this.lmQueue(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
+          const sec = ((Date.now() - t0) / 1000).toFixed(1);
+          this.setData({
+            asr3: 'LM: avail=' + String(avail) + ' ' + sec + 's',
+            asr4: 'LM: ' + String(out).trim().slice(0, 28)
+          });
         }).catch((e) => {
           this.setData({ asr4: 'LM prompt ERR ' + String((e && e.message) || e).slice(0, 24) });
         });
@@ -404,8 +421,8 @@ export default {
     if (!this._lm || !this._lm.ok || this._lm.cue) return;
     const sys = 'あなたは会話の補助キュー係です。書き起こしを受け取り、最新の発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。';
     const keep = (s) => { if (s) this._lm.cue = s; };
-    this.lmThen(() => LanguageModel.create({ systemPrompt: sys })).then(keep).catch(() => {
-      this.lmThen(() => LanguageModel.create()).then(keep).catch(() => { /* cues stay off */ });
+    this.lmQueue(() => LanguageModel.create({ systemPrompt: sys })).then(keep).catch(() => {
+      this.lmQueue(() => LanguageModel.create()).then(keep).catch(() => { /* cues stay off */ });
     });
   },
   cueViaLm(text) {
@@ -415,8 +432,14 @@ export default {
     const sess = this._lm.cue;
     const t0 = Date.now();
     const convo = a.finalsHist.slice(-5).join('\n');
-    this.lmThen(() => sess.prompt('会話の書き起こし（最新が最後）:\n' + convo)).then((out) => {
-      if (!this._asr || this._asr.cueSeq !== seq) return;
+    this.lmQueue(() => {
+      // A newer final already superseded this cue while it waited in
+      // the queue — skip the prompt entirely instead of burning a
+      // serialized round trip on a stale utterance.
+      if (!this._asr || this._asr.cueSeq !== seq) return null;
+      return sess.prompt('会話の書き起こし（最新が最後）:\n' + convo);
+    }).then((out) => {
+      if (out === null || !this._asr || this._asr.cueSeq !== seq) return;
       const cue = String(out || '').trim().replace(/\s+/g, ' ');
       const sec = ((Date.now() - t0) / 1000).toFixed(1);
       if (!cue || cue === 'NONE') {
@@ -424,8 +447,10 @@ export default {
       } else {
         this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
       }
-    }).catch(() => {
-      if (this._asr && this._asr.cueSeq === seq) this.setData({ asr4: '💡 ERR' });
+    }).catch((e) => {
+      if (this._asr && this._asr.cueSeq === seq) {
+        this.setData({ asr4: '💡 ERR ' + String((e && e.message) || e).slice(0, 22) });
+      }
     });
   },
   runTest() {
@@ -481,19 +506,16 @@ export default {
 <page>
   <view class="container">
     <text class="title">Verify {{ build }}</text>
-    <text class="line">conn: {{ connType }}</text>
-    <text class="line">{{ line1 }}</text>
-    <text class="line sub">{{ line2 }}</text>
-    <text class="line sub probe">{{ probe }}</text>
-    <text class="line sub">{{ cam }}</text>
-    <text class="line sub">{{ shot }}</text>
-    <text class="line sub">{{ shot2 }}</text>
-    <text class="line sub">{{ locRes }}</text>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
     <text class="line sub">{{ asr3 }}</text>
-    <text class="line sub">{{ asr4 }}</text>
+    <text class="line cue">{{ asr4 }}</text>
     <text class="line sub">{{ asr5 }}</text>
+    <text class="line sub probe">conn: {{ connType }} / {{ line1 }}</text>
+    <text class="line sub">{{ probe }}</text>
+    <text class="line sub">{{ cam }}</text>
+    <text class="line sub">{{ shot }}</text>
+    <text class="line sub">{{ locRes }}</text>
     <text class="line keys">{{ k1 }}</text>
     <text class="line keys">{{ k2 }}</text>
     <text class="line keys">{{ k3 }}</text>
@@ -535,6 +557,12 @@ export default {
 
 .probe {
   margin-top: 6px;
+}
+
+.cue {
+  color: #40FF5E;
+  font-size: 24px;
+  line-height: 30px;
 }
 
 .keys {
