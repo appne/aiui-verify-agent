@@ -5,6 +5,19 @@
 </script>
 
 <script setup>
+// vrf-b16: gesture disambiguation (user report on b15: taps AND
+// swipes kept flipping the ASR loop between starting/stop — the
+// b15 device capture even shows the conversation ending in
+// 'STOP (manual)' with counters reset). Temple input arrives as
+// GlobalHook FIRST, then the gesture key (tap: Enter, swipe fwd:
+// ArrowUp, swipe back: ArrowDown) — measured by other AIUI devs
+// in the Studio simulator; physical glasses may send a lone
+// GlobalHook only. Pre-b16 code toggled on GlobalHook itself, so
+// every swipe toggled and taps could double-toggle. Now
+// GlobalHook only arms a pending tap (gestureDelayMs, default
+// 300): an Arrow cancels it — swipes are SCROLL ONLY (user
+// request); Enter confirms it (toggle once); if nothing follows,
+// the timer fires it as a lone tap.
 // vrf-b15: display rework #3 (user requests after the b14 device
 // test — readable, though not while walking; and the log's last
 // line was JUST cut off at the bottom). Removed two lines above
@@ -79,7 +92,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b15',
+    build: 'vrf-b16',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -405,17 +418,26 @@ export default {
     }
   },
   onKeyUp(event) {
-    if (event.code === 'Enter' || event.code === 'GlobalHook') {
+    const code = event.code;
+    if (code === 'GlobalHook') {
       event.preventDefault();
+      if (this._tapTimer) clearTimeout(this._tapTimer);
+      this._tapTimer = setTimeout(() => {
+        this._tapTimer = null;
+        this.toggleAsr();
+      }, this.gestureDelayMs || 300);
+      return;
+    }
+    if (code === 'Enter') {
+      event.preventDefault();
+      if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
       this.toggleAsr();
+      return;
     }
-    if (event.code === 'ArrowUp') {
+    if (code === 'ArrowUp' || code === 'ArrowDown') {
       event.preventDefault();
-      this.cueScroll(1);
-    }
-    if (event.code === 'ArrowDown') {
-      event.preventDefault();
-      this.cueScroll(-1);
+      if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
+      this.cueScroll(code === 'ArrowUp' ? 1 : -1);
     }
   }
 }
