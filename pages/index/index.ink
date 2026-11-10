@@ -5,6 +5,26 @@
 </script>
 
 <script setup>
+// vrf-b12: cue engine v3 + legacy probe clutter removed (user call).
+// b11 device test: '💡考え中…' appeared instantly (good) but cues
+// mostly ended in ERR timeout / session errors and the thinking
+// state dragged on. Root causes addressed here:
+//  (1) the 8 s prompt timeout only changed the DISPLAY — the prompt
+//      kept living on the shared session, so the next cue prompted
+//      a busy session and the runtime rejected it (session errors),
+//      cascading. b12 uses a FRESH session per cue (bare create(),
+//      the probe's known-fast path; instructions ride in the prompt
+//      text, no systemPrompt create), prompts it exactly once, and
+//      discards it — a timed-out session is never touched again.
+//  (2) prompts fired mid-speech compete with the ASR loop for the
+//      SoC and ingest ever-growing session context. b12 debounces:
+//      a cue fires only after ~1.2 s of no new final, with just the
+//      last 3 finals as context, i.e. into a pause, from scratch.
+// Removed per user request: the legacy verification surface from
+// the vrf-b2..b7 era (conn/fetch test lines + TEST button, loc /
+// cam API probes, wx-key enumeration lines, camera shoot). Those
+// APIs were verified long ago; kensho's job now is the ASR loop +
+// LM cue. The LM probe stays (it gates the cue engine).
 // vrf-b11: cue UX rework after the b10 device test — the wearer saw
 // NO reaction because cues queued FIFO behind 17 finals and landed
 // 35 s late. Now: a final instantly shows '💡考え中…', at most one
@@ -29,205 +49,16 @@
 //      shown on asr4 with its latency; asr5 shows the live interim
 //      caption or the latest final. The Gemini /cue path on the
 //      laptop listener stays as the fallback if LM is unavailable.
-// Enter toggles the ASR loop as in vrf-b8; shoot still runs once
-// from onLoad.
+// Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b11',
-    connType: 'tap: test',
-    line1: 'tap: fetch test',
-    line2: 'Enter = run fetch',
-    probe: 'loc: ...',
-    cam: 'cam: ...',
-    shot: 'shot: idle',
-    shot2: '',
-    locRes: '',
+    build: 'vrf-b12',
     asr1: 'ASR: Enter = loop start/stop',
-    asr2: '', asr3: '', asr4: '', asr5: '',
-    k1: '', k2: '', k3: '', k4: '', k5: ''
+    asr2: '', asr3: '', asr4: '', asr5: ''
   },
-  _lastRun: 0,
   _asr: null,
   onLoad() {
-    this.refreshConn();
-    this.probeApis();
     setTimeout(() => this.probeLm(), 800);
-    setTimeout(() => this.shoot(), 2500);
-  },
-  // Camera test (vrf-b6): the page now HAS a <camera> component.
-  // Create the context, dump its full method list into the k-lines,
-  // then takePhoto with callback + promise + 12s timeout reporting.
-  shoot() {
-    const setShot = (s, s2) => this.setData({ shot: s, shot2: s2 || '' });
-    try {
-      if (!wx.media || typeof wx.media.createCameraContext !== 'function') {
-        setShot('shot: no createCameraContext');
-        return;
-      }
-      const ctx = wx.media.createCameraContext();
-      if (!ctx) { setShot('shot: ctx is null'); return; }
-      this._camCtx = ctx;
-      const NOISE = ['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf'];
-      let names = [];
-      try {
-        let o = ctx;
-        for (let i = 0; i < 3 && o; i++) {
-          names = names.concat(Object.getOwnPropertyNames(o));
-          o = Object.getPrototypeOf(o);
-        }
-        names = Array.from(new Set(names)).filter((n) => NOISE.indexOf(n) === -1).sort();
-      } catch (e) { /* keep empty */ }
-      const joined = names.join(',');
-      this.setData({
-        k1: 'M:' + joined.slice(0, 36),
-        k2: joined.slice(36, 74),
-        k3: joined.slice(74, 112),
-        k4: joined.slice(112, 150),
-        k5: joined.slice(150, 188)
-      });
-      if (typeof ctx.takePhoto !== 'function') {
-        setShot('ctx: no takePhoto fn');
-        return;
-      }
-      setShot('shooting (tiny comp)...');
-      let done = false;
-      const finish = (a, b) => { if (!done) { done = true; setShot(a, b); } };
-      setTimeout(() => finish('PHOTO TIMEOUT', 'no result in 12s'), 12000);
-      const describe = (r) => {
-        try {
-          const d = r && r.data;
-          const t = Object.prototype.toString.call(d);
-          const len = d && (d.byteLength != null ? d.byteLength : (d.length != null ? d.length : (d.size != null ? d.size : '?')));
-          return t.replace('[object ', '').replace(']', '') + ' ' + len + 'B ' + ((r && r.mimeType) || '');
-        } catch (e) { return 'desc err'; }
-      };
-      const ret = ctx.takePhoto({ quality: 'high' });
-      if (ret && typeof ret.then === 'function') {
-        ret.then((r) => finish('PHOTO OK ' + ((r && r.data && r.data.byteLength) || 0) + 'B', ''))
-          .catch((e) => finish('PHOTO FAIL (promise)', String((e && e.errMsg) || e).slice(0, 38)));
-      } else {
-        finish('takePhoto: no promise', 'ret=' + Object.prototype.toString.call(ret));
-      }
-    } catch (e) {
-      setShot('shot exception', String(e).slice(0, 38));
-    }
-  },
-  refreshConn() {
-    let t = 'unknown';
-    try {
-      if (typeof navigator !== 'undefined' && navigator.connection) {
-        t = navigator.connection.type || 'none';
-        if (navigator.connection.effectiveType) {
-          t += '/' + navigator.connection.effectiveType;
-        }
-      }
-    } catch (e) {
-      t = 'err';
-    }
-    this.setData({ connType: t });
-  },
-  // API-surface probe: which location APIs does this runtime actually
-  // expose? zaisen found wx.getLocation missing on the real glasses
-  // (footer "loc n/a"); this enumerates wx and tries the candidates.
-  probeApis() {
-    const has = (o, k) => {
-      try { return !!o && typeof o[k] === 'function'; } catch (e) { return false; }
-    };
-    const gL = has(wx, 'getLocation');
-    const gF = has(wx, 'getFuzzyLocation');
-    const oLC = has(wx, 'onLocationChange');
-    const sLU = has(wx, 'startLocationUpdate');
-    let navGeo = false;
-    try {
-      navGeo = typeof navigator !== 'undefined' && !!navigator.geolocation &&
-        typeof navigator.geolocation.getCurrentPosition === 'function';
-    } catch (e) { /* no geolocation */ }
-    let rk = '-';
-    try {
-      if (typeof rokid !== 'undefined') rk = 'rokid';
-      else if (typeof Rokid !== 'undefined') rk = 'Rokid';
-      else if (typeof yoda !== 'undefined') rk = 'yoda';
-    } catch (e) { /* none */ }
-    this.setData({
-      probe: 'loc: gL' + (gL ? 'Y' : '-') + ' gF' + (gF ? 'Y' : '-') +
-        ' oLC' + (oLC ? 'Y' : '-') + ' sLU' + (sLU ? 'Y' : '-') +
-        ' navGeo' + (navGeo ? 'Y' : '-') + ' g:' + rk
-    });
-    // Enumerate the wx keys, chunked into lines of ~34 chars.
-    let keys = [];
-    try { keys = Object.keys(wx || {}).sort(); } catch (e) { /* none */ }
-    const lines = [];
-    let cur = 'wx(' + keys.length + '):';
-    for (const k of keys) {
-      if ((cur + ' ' + k).length > 34 && cur.length > 10) { lines.push(cur); cur = k; }
-      else cur += (cur ? ' ' : '') + k;
-    }
-    if (cur) lines.push(cur);
-    // vrf-b4: enumerate subkeys of every object-valued wx key
-    // (wx.media, wx.speech, ...) into the k-lines.
-    const objDesc = [];
-    for (const k of keys) {
-      try {
-        const v = wx[k];
-        if (v && typeof v === 'object') {
-          objDesc.push(k + '{' + Object.keys(v).sort().join(',') + '}');
-        }
-      } catch (e) { /* ignore */ }
-    }
-    let joined = objDesc.join(' ') || 'no object values';
-    const toks = [];
-    for (const t of joined.split(' ')) {
-      if (t.length <= 36) toks.push(t);
-      else for (let i = 0; i < t.length; i += 36) toks.push(t.slice(i, i + 36));
-    }
-    const olines = [];
-    let ocur = 'obj:';
-    for (const t of toks) {
-      if ((ocur + ' ' + t).length > 38 && ocur.length > 5) { olines.push(ocur); ocur = t; }
-      else ocur += (ocur ? ' ' : '') + t;
-    }
-    if (ocur) olines.push(ocur);
-    const patch = {};
-    for (let i = 0; i < 5; i++) patch['k' + (i + 1)] = olines[i] || '';
-    if (olines.length > 5) patch.k5 = (patch.k5 + ' +more').slice(0, 40);
-    this.setData(patch);
-    // Camera/media API candidates (vrf-b3): can an AIUI agent shoot?
-    const mark = (b) => (b ? 'Y' : '-');
-    const hasO = (o, k) => {
-      try { return !!o && typeof o[k] !== 'undefined'; } catch (e) { return false; }
-    };
-    this.setData({
-      cam: 'cam: cCC' + mark(has(wx, 'createCameraContext')) +
-        ' chI' + mark(has(wx, 'chooseImage')) +
-        ' chM' + mark(has(wx, 'chooseMedia')) +
-        ' tP' + mark(has(wx, 'takePhoto')) +
-        ' svI' + mark(has(wx, 'saveImageToPhotosAlbum')) +
-        ' scC' + mark(has(wx, 'scanCode')) +
-        ' gRM' + mark(has(wx, 'getRecorderManager')) +
-        ' cVC' + mark(has(wx, 'createVideoContext'))
-    });
-    // Live attempts, only where the API exists.
-    const setRes = (s) => this.setData({ locRes: s });
-    if (gL) {
-      try {
-        wx.getLocation({
-          success: (r) => setRes('gL ok ' + r.latitude + ',' + r.longitude),
-          fail: (e) => setRes('gL fail ' + ((e && e.errMsg) || '').slice(0, 22))
-        });
-      } catch (e) { setRes('gL exception'); }
-    }
-    if (navGeo) {
-      setRes('geo: waiting...');
-      let answered = false;
-      try {
-        navigator.geolocation.getCurrentPosition(
-          (p) => { answered = true; setRes('geo ok ' + p.coords.latitude.toFixed(4) + ',' + p.coords.longitude.toFixed(4)); },
-          (e) => { answered = true; setRes('geo err ' + (e && e.code)); },
-          { timeout: 6000 }
-        );
-        setTimeout(() => { if (!answered) setRes('geo: timeout'); }, 7000);
-      } catch (e) { setRes('geo exception'); }
-    }
   },
   // ---- vrf-b8: ASR continuous-loop spike ----
   fmtT(ms) {
@@ -260,9 +91,8 @@ export default {
       on: true, idx: 0, t0: Date.now(), frozenMs: 0, sessT0: 0,
       interim: 0, finals: 0, restarts: 0, errors: 0, consecErr: 0,
       sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: '',
-      finalsHist: [], cueSeq: 0, lastFinal: '', liveInterim: ''
+      finalsHist: [], lastFinal: '', liveInterim: ''
     };
-    if (this._lm && this._lm.ok) this.cueSession();
     this.asrRender();
     this.asrStart();
   },
@@ -359,7 +189,11 @@ export default {
     a.on = false;
     a.frozenMs = Date.now() - a.t0;
     try { if (a.rec) a.rec.stop(); } catch (e) { /* ignore */ }
-    if (this._cue) this._cue.pending = null;
+    if (this._cue) {
+      if (this._cue.timer) { clearTimeout(this._cue.timer); this._cue.timer = null; }
+      this._cue.dirty = false;
+      this._cue.seq++;
+    }
     a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
     this.asrRender();
   },
@@ -426,14 +260,18 @@ export default {
       this.setData({ asr3: 'LM avail ERR ' + String((e && e.message) || e).slice(0, 24) });
     });
   },
-  // ---- vrf-b11: cue engine (latest-only coalescing) ----
-  // At most one cue prompt is ever in flight. A final that arrives
-  // while busy overwrites the single pending slot; when the flight
-  // lands, the pending (newest) utterance fires immediately. The cue
-  // line reacts instantly ('💡考え中…') so the wearer always sees
-  // the glasses respond to speech, even before the cue itself lands.
+  // ---- vrf-b12: cue engine v3 (debounce + disposable sessions) ----
+  // A final instantly shows '💡考え中…' and (re)arms a debounce
+  // timer; the cue fires only once speech pauses (~1.2 s with no new
+  // final), so the LM never competes with the ASR loop mid-utterance
+  // and never ingests a long backlog. Each cue uses a FRESH bare
+  // create() session, prompts it exactly once with the last 3 finals
+  // (instructions in the prompt text), then discards the session:
+  // no accumulated context (the probe's 1.6 s condition), and a
+  // timed-out session can never poison the next cue — b11's ERR
+  // timeout → busy-session ERR cascade is structurally impossible.
   cueState() {
-    if (!this._cue) this._cue = { busy: false, pending: null, sess: null, served: 0 };
+    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0 };
     return this._cue;
   },
   lmTimeout(p, ms) {
@@ -442,24 +280,18 @@ export default {
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
     ]);
   },
-  cueSession() {
-    const c = this.cueState();
-    if (c.sess && c.served < 6) return Promise.resolve(c.sess);
-    const sys = 'あなたは会話の補助キュー係です。書き起こしを受け取り、最新の発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。';
-    const mk = (opts) => this.lmTimeout(this.lmQueue(() => LanguageModel.create(opts)), 5000);
-    return mk({ systemPrompt: sys }).catch(() => mk(undefined)).then((s) => {
-      if (!s) return null;
-      if (c.sess && c.sess !== s) { try { if (c.sess.destroy) c.sess.destroy(); } catch (e) { /* ignore */ } }
-      c.sess = s;
-      c.served = 0;
-      return s;
-    }).catch(() => null);
-  },
   cueRequest(text) {
     if (!this._lm || !this._lm.ok) return;
     const c = this.cueState();
     this.setData({ asr4: '💡考え中…' });
-    if (c.busy) { c.pending = text; return; }
+    c.dirty = true;
+    if (c.timer) clearTimeout(c.timer);
+    c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, this.cueDebounceMs || 1200);
+  },
+  cueMaybe() {
+    const c = this.cueState();
+    if (c.busy || !c.dirty) return;
+    if (!this._asr || !this._asr.on) { c.dirty = false; return; }
     this.cueFire();
   },
   cueFire() {
@@ -467,78 +299,47 @@ export default {
     const a = this._asr;
     if (!a) { c.busy = false; return; }
     c.busy = true;
-    c.served++;
+    c.dirty = false;
+    const seq = ++c.seq;
     const t0 = Date.now();
-    this.cueSession().then((sess) => {
-      if (!sess) {
-        this.setData({ asr4: '💡 (LMなし)' });
-        this.cueDone();
-        return;
-      }
-      const convo = a.finalsHist.slice(-5).join('\n');
-      this.lmTimeout(this.lmThen(() => sess.prompt('会話の書き起こし（最新が最後）:\n' + convo)), 8000).then((out) => {
-        let cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
+    const convo = a.finalsHist.slice(-3).join('\n');
+    const promptText = '会話補助のキュー係として、書き起こし（最新が最後）の最新発話への短いキュー（用語の短い説明・要点・返答の候補）を30文字以内で1つだけ返してください。出す価値がなければ NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
+    this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
+      if (!sess) throw new Error('create-null');
+      return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
+        try { if (sess.destroy) sess.destroy(); } catch (e) { /* ignore */ }
+        return out;
+      }).catch((e) => {
+        try { if (sess.destroy) sess.destroy(); } catch (e2) { /* ignore */ }
+        throw e;
+      });
+    }).then((out) => {
+      if (seq === c.seq) {
+        const cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
         if (!cue || cue === 'NONE') {
           this.setData({ asr4: '💡なし (' + sec + 's)' });
         } else {
           this.setData({ asr4: '💡 ' + cue.slice(0, 30) + ' (' + sec + 's)' });
         }
-        this.cueDone();
-      }).catch((e) => {
+      }
+      this.cueDone();
+    }).catch((e) => {
+      if (seq === c.seq) {
         this.setData({ asr4: '💡 ERR ' + String((e && e.message) || e).slice(0, 22) });
-        this.cueDone();
-      });
+      }
+      this.cueDone();
     });
   },
   cueDone() {
     const c = this.cueState();
     c.busy = false;
-    if (c.pending !== null && this._asr && this._asr.on) {
-      c.pending = null;
-      this.setData({ asr4: '💡考え中…' });
-      this.cueFire();
-    } else {
-      c.pending = null;
+    // Finals arrived while this cue was in flight: take one short
+    // breath, then cue the newest context (never a backlog).
+    if (c.dirty && this._asr && this._asr.on) {
+      if (c.timer) clearTimeout(c.timer);
+      c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 600);
     }
-  },
-  runTest() {
-    const now = Date.now();
-    if (now - this._lastRun < 1500) return;
-    this._lastRun = now;
-    this.refreshConn();
-    this.setData({ line1: 'fetching...', line2: '' });
-    const started = now;
-    const url = 'https://pebble-bridge.flat-tooth-221e.workers.dev/inbox-status';
-    const done = (ok, msg, sub) => {
-      const ms = Date.now() - started;
-      this.setData({
-        line1: msg + ' ' + ms + 'ms',
-        line2: sub || ''
-      });
-    };
-    try {
-      wx.request({
-        url: url,
-        method: 'GET',
-        success: (res) => {
-          let sub = '';
-          try {
-            const d = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-            if (d && d.latest) sub = 'latest: ' + d.latest;
-          } catch (e) { /* keep sub empty */ }
-          done(res.statusCode >= 200 && res.statusCode < 300, 'HTTP ' + res.statusCode, sub);
-        },
-        fail: (err) => {
-          done(false, 'fetch FAIL', (err && err.errMsg) ? String(err.errMsg).slice(0, 28) : '');
-        }
-      });
-    } catch (e) {
-      done(false, 'wx.request n/a', '');
-    }
-  },
-  handleTap() {
-    this.runTest();
   },
   onKeyUp(event) {
     if (event.code === 'Enter' || event.code === 'GlobalHook') {
@@ -560,18 +361,6 @@ export default {
     <text class="line sub">{{ asr3 }}</text>
     <text class="line cue">{{ asr4 }}</text>
     <text class="line sub">{{ asr5 }}</text>
-    <text class="line sub probe">conn: {{ connType }} / {{ line1 }}</text>
-    <text class="line sub">{{ probe }}</text>
-    <text class="line sub">{{ cam }}</text>
-    <text class="line sub">{{ shot }}</text>
-    <text class="line sub">{{ locRes }}</text>
-    <text class="line keys">{{ k1 }}</text>
-    <text class="line keys">{{ k2 }}</text>
-    <text class="line keys">{{ k3 }}</text>
-    <text class="line keys">{{ k4 }}</text>
-    <text class="line keys">{{ k5 }}</text>
-    <camera class="camview"></camera>
-    <button bindtap="handleTap">TEST</button>
   </view>
 </page>
 
@@ -604,37 +393,10 @@ export default {
   line-height: 22px;
 }
 
-.probe {
-  margin-top: 6px;
-}
-
 .cue {
   color: #40FF5E;
   font-size: 24px;
   line-height: 30px;
 }
 
-.keys {
-  color: #40FF5E99;
-  font-size: 18px;
-  line-height: 22px;
-}
-
-.camview {
-  width: 2px;
-  height: 2px;
-  margin-top: 6px;
-}
-
-button {
-  color: #40FF5E;
-  border: 1px solid #40ff5d42;
-  border-radius: 12px;
-  box-sizing: border-box;
-  padding: 5px;
-  width: 120px;
-  line-height: 24px;
-  text-align: center;
-  margin-top: 10px;
-}
 </style>
