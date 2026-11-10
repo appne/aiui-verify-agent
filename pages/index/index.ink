@@ -5,6 +5,19 @@
 </script>
 
 <script setup>
+// vrf-b20: translation-lane fixes (device report on b19: term
+// cues worked but English was NEVER translated). Two defects:
+// (1) isAlphaFinal demanded pure printable ASCII — but a Japanese
+// recognizer emitting English text plausibly appends '。' or uses
+// full-width Latin, so real English finals fell back to the
+// assist lane and were judged NONE. Detection is now: normalize
+// (full-width -> half-width, JP punctuation -> space) and accept
+// when >=2 Latin letters remain and NO CJK/kana character is
+// present. (2) trPump borrowed the assist lane's seq as its
+// cancel guard, but cueFire bumps seq on EVERY assist cue — an
+// assist cue firing mid-translation silently discarded the
+// translation. The lane now has its own generation counter
+// (trGen), bumped only by asrStop.
 // vrf-b19: alphabet-final auto-translation (device findings +
 // user instruction after the b18 test). FINDING: even in JA mode
 // the recognizer transcribed English speech AS ENGLISH — the
@@ -133,7 +146,7 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b19',
+    build: 'vrf-b20',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
@@ -276,6 +289,7 @@ export default {
       if (this._cue.timer) { clearTimeout(this._cue.timer); this._cue.timer = null; }
       this._cue.dirty = false;
       this._cue.trq = [];
+      this._cue.trGen++;
       this._cue.seq++;
     }
     this.thinkOff();
@@ -375,7 +389,7 @@ export default {
   // timed-out session can never poison the next cue — b11's ERR
   // timeout → busy-session ERR cascade is structurally impossible.
   cueState() {
-    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '', trq: [], trBusy: false };
+    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '', trq: [], trBusy: false, trGen: 0 };
     return this._cue;
   },
   // ---- vrf-b13: thinking indicator + reply log ----
@@ -416,12 +430,24 @@ export default {
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
     ]);
   },
-  // vrf-b19: an all-alphabet final (printable ASCII, >=2 letters)
-  // is foreign speech: translate it, don't assist-judge it.
+  // vrf-b20: Latin-script detection tolerant of recognizer
+  // habits: full-width Latin is folded to half-width and Japanese
+  // punctuation is blanked before judging; a final counts as
+  // foreign when >=2 Latin letters remain and no CJK/kana
+  // character is present.
+  latinNorm(text) {
+    return String(text || '')
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+      .replace(/[。、・！？]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  },
   isAlphaFinal(text) {
-    if (!text || !/^[\x20-\x7E]+$/.test(text)) return false;
-    const letters = text.match(/[A-Za-z]/g);
-    return !!letters && letters.length >= 2;
+    const t = this.latinNorm(text);
+    if (!t) return false;
+    const letters = t.match(/[A-Za-z]/g);
+    if (!letters || letters.length < 2) return false;
+    return !/[぀-ヿ㐀-鿿豈-﫿ｦ-ﾝ]/.test(t);
   },
   cueRequest(text) {
     if (!this._lm || !this._lm.ok) return;
@@ -456,7 +482,7 @@ export default {
     if (c.busy || c.trBusy || !c.trq.length) return;
     if (!this._asr || !this._asr.on) { c.trq = []; return; }
     const q = c.trq.shift();
-    const seqAt = c.seq;
+    const genAt = c.trGen;
     c.trBusy = true;
     const t0 = Date.now();
     const promptText = '次の外国語の発話を自然な日本語に訳してください。訳文だけを日本語60文字以内で返してください。装飾記号は使わないでください。\n' + q;
@@ -470,14 +496,14 @@ export default {
         throw e;
       });
     }).then((out) => {
-      if (seqAt !== c.seq) return;
+      if (genAt !== c.trGen) return;
       const txt = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
       const sec = ((Date.now() - t0) / 1000).toFixed(1);
       if (txt && txt !== 'NONE') {
         this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + txt.slice(0, 44) + ' (' + sec + 's)');
       }
     }).catch((e) => {
-      if (seqAt !== c.seq) return;
+      if (genAt !== c.trGen) return;
       this.cuePairPush('🗣 ' + q.slice(0, 40), '⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
     }).then(() => {
       c.trBusy = false;
