@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b23: device report on b22 — the remote <image> DID render
+// (marker + legend strip seen), but the text below it was cut
+// off: the 448px source seems to render at natural size, pushing
+// everything down (CSS 300px not honoured, or honoured but the
+// layout still overflowed). b23 therefore serves a 300x300
+// source: a dark-green base map (coast/prefecture lines from
+// Natural-Earth-derived GeoJSON) under synthetic JMA-palette rain
+// (a front band + an isolated cell), converted by the same
+// green-ladder pipeline. Question: does the page now fit?
 // vrf-b22: external-image spike (user request 2026-11-13, rain
 // radar): can an AIUI page render an <image> from a remote URL?
 // The page gains a literal-src <image> (a JMA-nowcast radar frame
@@ -166,11 +175,11 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b22',
+    build: 'vrf-b23',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
-    imgLine: 'IMG: JMA nowc 12:55 green test',
+    imgLine: 'IMG: map + fake rain 300px',
     log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
     log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
   },
@@ -182,7 +191,7 @@ export default {
   // vrf-b22: fetch the radar image URL over the network as a
   // reachability diagnostic, independent of <image> rendering.
   probeImg() {
-    const url = 'https://muse.ai/files/1440026499187321/1667124941770977/kdepmuc9qsswnds1u6sy7vd6/radar-latest.png';
+    const url = 'https://muse.ai/files/1440026499187321/1681842709948400/s9esiuh1g7ygojwqlvb7rzz7/radar-test300.png';
     const t0 = Date.now();
     try {
       wx.request({
@@ -669,7 +678,7 @@ export default {
     <text class="title">Verify {{ build }}</text>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
-    <image class="radar" src="https://muse.ai/files/1440026499187321/1667124941770977/kdepmuc9qsswnds1u6sy7vd6/radar-latest.png"></image>
+    <image class="radar" src="https://muse.ai/files/1440026499187321/1681842709948400/s9esiuh1g7ygojwqlvb7rzz7/radar-test300.png"></image>
     <text class="line sub">{{ imgLine }}</text>
     <text class="line cue">{{ log1 }}</text>
     <text class="line cue">{{ log2 }}</text>
