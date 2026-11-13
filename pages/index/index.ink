@@ -5,6 +5,15 @@
 </script>
 
 <script setup>
+// vrf-b24: device report on b23 — map, the four northern rain
+// blobs, the southern cell and the legend strip all rendered,
+// but the text BELOW the image was still invisible, even with a
+// 300x300 source. Likely the visible (in-FOV) area is only the
+// central part of the framebuffer, so anything under a tall
+// image falls outside it. b24: (1) the status line moves ABOVE
+// the image; (2) the source becomes a wide 448x300 frame (with
+// bright corner ticks to judge edge cropping); (3) log budget
+// drops to 4. ASR lines move below the image (sacrificial zone).
 // vrf-b23: device report on b22 — the remote <image> DID render
 // (marker + legend strip seen), but the text below it was cut
 // off: the 448px source seems to render at natural size, pushing
@@ -175,11 +184,11 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b23',
+    build: 'vrf-b24',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
-    imgLine: 'IMG: map + fake rain 300px',
+    imgLine: 'IMG: map + fake rain 448x300',
     log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
     log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
   },
@@ -191,7 +200,7 @@ export default {
   // vrf-b22: fetch the radar image URL over the network as a
   // reachability diagnostic, independent of <image> rendering.
   probeImg() {
-    const url = 'https://muse.ai/files/1440026499187321/1681842709948400/s9esiuh1g7ygojwqlvb7rzz7/radar-test300.png';
+    const url = 'https://muse.ai/files/1440026499187321/1099997879522808/149kuif5e42rcfmpwkntpkr7/radar-test448.png';
     const t0 = Date.now();
     try {
       wx.request({
@@ -479,7 +488,7 @@ export default {
     let start = end;
     while (start > 0 && end - start < 12) {
       const w = this.estLines(c.log[start - 1]);
-      if (start < end && used + w > 6) break;
+      if (start < end && used + w > 4) break;
       used += w;
       start--;
     }
@@ -676,10 +685,10 @@ export default {
   <view class="container">
     <text class="line sub">{{ think }}</text>
     <text class="title">Verify {{ build }}</text>
+    <text class="line sub">{{ imgLine }}</text>
+    <image class="radar" src="https://muse.ai/files/1440026499187321/1099997879522808/149kuif5e42rcfmpwkntpkr7/radar-test448.png"></image>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
-    <image class="radar" src="https://muse.ai/files/1440026499187321/1681842709948400/s9esiuh1g7ygojwqlvb7rzz7/radar-test300.png"></image>
-    <text class="line sub">{{ imgLine }}</text>
     <text class="line cue">{{ log1 }}</text>
     <text class="line cue">{{ log2 }}</text>
     <text class="line cue">{{ log3 }}</text>
@@ -731,7 +740,7 @@ export default {
 }
 
 .radar {
-  width: 300px;
+  width: 448px;
   height: 300px;
   margin: 4px 0;
 }
