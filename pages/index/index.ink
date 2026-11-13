@@ -5,6 +5,16 @@
 </script>
 
 <script setup>
+// vrf-b22: external-image spike (user request 2026-11-13, rain
+// radar): can an AIUI page render an <image> from a remote URL?
+// The page gains a literal-src <image> (a JMA-nowcast radar frame
+// converted on the VM to a green brightness ladder, hosted at a
+// stable public URL — the production shape would be a stable URL
+// whose content updates). onLoad also wx.request-fetches the same
+// URL so network reachability is logged separately from image
+// rendering. The cue log's visual budget drops 19 -> 6 to make
+// room; if <image> renders nothing (or breaks layout) the ASR /
+// cue functions still work and b23 reverts.
 // vrf-b21: last-line cutoff, round 2 (device report on b20: when
 // the real-time line wraps to 2 lines, the scroll area shifts and
 // the last line disappears). Root cause: the log window counted
@@ -156,16 +166,37 @@
 // Enter (tap) toggles the ASR loop as in vrf-b8.
 export default {
   data: {
-    build: 'vrf-b21',
+    build: 'vrf-b22',
     think: '',
     asr1: 'ASR: Enter = loop start/stop',
     asr2: '',
+    imgLine: 'IMG: JMA nowc 12:55 green test',
     log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
     log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
   },
   _asr: null,
   onLoad() {
     setTimeout(() => this.probeLm(), 800);
+    setTimeout(() => this.probeImg(), 400);
+  },
+  // vrf-b22: fetch the radar image URL over the network as a
+  // reachability diagnostic, independent of <image> rendering.
+  probeImg() {
+    const url = 'https://muse.ai/files/1440026499187321/1667124941770977/kdepmuc9qsswnds1u6sy7vd6/radar-latest.png';
+    const t0 = Date.now();
+    try {
+      wx.request({
+        url,
+        success: (res) => {
+          this.setData({ imgLine: 'IMG req OK ' + ((res && res.statusCode) || '?') + ' ' + (Date.now() - t0) + 'ms' });
+        },
+        fail: (e) => {
+          this.setData({ imgLine: 'IMG req NG ' + String((e && (e.errMsg || e.message)) || e).slice(0, 26) });
+        }
+      });
+    } catch (e) {
+      this.setData({ imgLine: 'IMG req EXC ' + String(e).slice(0, 24) });
+    }
   },
   // ---- vrf-b8: ASR continuous-loop spike ----
   fmtT(ms) {
@@ -439,7 +470,7 @@ export default {
     let start = end;
     while (start > 0 && end - start < 12) {
       const w = this.estLines(c.log[start - 1]);
-      if (start < end && used + w > 19) break;
+      if (start < end && used + w > 6) break;
       used += w;
       start--;
     }
@@ -638,6 +669,8 @@ export default {
     <text class="title">Verify {{ build }}</text>
     <text class="line sub">{{ asr1 }}</text>
     <text class="line sub">{{ asr2 }}</text>
+    <image class="radar" src="https://muse.ai/files/1440026499187321/1667124941770977/kdepmuc9qsswnds1u6sy7vd6/radar-latest.png"></image>
+    <text class="line sub">{{ imgLine }}</text>
     <text class="line cue">{{ log1 }}</text>
     <text class="line cue">{{ log2 }}</text>
     <text class="line cue">{{ log3 }}</text>
@@ -686,6 +719,12 @@ export default {
   color: #40FF5E;
   font-size: 15px;
   line-height: 17px;
+}
+
+.radar {
+  width: 300px;
+  height: 300px;
+  margin: 4px 0;
 }
 
 </style>
