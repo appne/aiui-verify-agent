@@ -5,6 +5,11 @@
 </script>
 
 <script setup>
+// vrf-b28: same samples as b27, but the image URL carries
+// a load-time cache bust (?t=Date.now()) so regenerated
+// sample files show up without a repackage. (The b27
+// samples were also regenerated production-faithfully:
+// v1 dissolved the labels' G0 outline into the rain.)
 // vrf-b27: additive-rain samples (2026-11-15). The radar's
 // rain compositing became ADDITIVE (terrain G0..32 + rain
 // G80..220) so the land stays visible under a full cover;
@@ -23,7 +28,7 @@
 // the OS exit works.
 export default {
   data: {
-    build: 'vrf-b27',
+    build: 'vrf-b28',
     status: '',
     imgSrc: ''
   },
@@ -44,7 +49,7 @@ export default {
     const s = this._samples[this._idx];
     this.setData({
       status: s.label,
-      imgSrc: this._base + s.src + '?v=27'
+      imgSrc: this._base + s.src + '?t=' + Date.now()
     });
   },
   step(d) {
