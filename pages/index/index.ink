@@ -5,48 +5,87 @@
 </script>
 
 <script setup>
-// vrf-b26: gradation follow-up (2026-11-14). b25 findings from
-// the wearer: low range separates well (8-steps visible at
-// 0..56; up to ~G64 usable for map shading), 17-steps above
-// ~100 are marginal, 8-steps at 192..255 are invisible. Also:
-// v-if is NOT supported by the ink runtime — both branches
-// rendered stacked (the page itself scrolls, so a single long
-// page is fine). b26 is therefore one scrollable page, no
-// conditionals, no tap handling:
-//   block 1: 100..255 in 6 steps (31 apart) — the wearer
-//            asked to see this division for the rain band
-//   block 2: 100..255 in 11 steps (~15.5 apart) — finer probe
-//            of where separation dies in the upper range
+// vrf-b27: additive-rain samples (2026-11-15). The radar's
+// rain compositing became ADDITIVE (terrain G0..32 + rain
+// G80..220) so the land stays visible under a full cover;
+// the wearer wants to judge the BRIGHT end on the real
+// display (samples on a monitor cannot show it). Four
+// synthetic frames, generated with the production formula
+// over the real Kyoto-Station base map and served by the
+// listener as /radar/sampleN.png:
+//   0: no rain (the base itself)
+//   1: full light rain (strength 0.15, rain G101)
+//   2: full heavy rain (strength 0.92, rain G208)
+//   3: vertical thirds — none | light | heavy
+// Tap cycles 0 -> 1 -> 2 -> 3; swipes step forward/back.
+// Tap handling copies the radar idiom (GlobalHook arm +
+// Enter confirm + 700 ms lockout). BACK is left alone so
+// the OS exit works.
 export default {
   data: {
-    build: 'vrf-b26'
+    build: 'vrf-b27',
+    status: '',
+    imgSrc: ''
+  },
+  _base: 'http://100.124.235.107:18765/radar/',
+  _samples: [
+    { src: 'sample0.png', label: '1/4 無雨' },
+    { src: 'sample1.png', label: '2/4 全面・薄い雨' },
+    { src: 'sample2.png', label: '3/4 全面・濃い雨' },
+    { src: 'sample3.png', label: '4/4 3分割 無|薄|濃' }
+  ],
+  _idx: 0,
+  _tapTimer: null,
+  _tapLockUntil: 0,
+  onLoad() {
+    this.applySample();
+  },
+  applySample() {
+    const s = this._samples[this._idx];
+    this.setData({
+      status: s.label,
+      imgSrc: this._base + s.src + '?v=27'
+    });
+  },
+  step(d) {
+    const n = this._samples.length;
+    this._idx = ((this._idx + d) % n + n) % n;
+    this.applySample();
+  },
+  fireTap() {
+    this._tapLockUntil = Date.now() + 700;
+    this.step(1);
+  },
+  onKeyUp(event) {
+    const code = event && event.code;
+    if (code === 'GlobalHook') {
+      event.preventDefault();
+      if (Date.now() < this._tapLockUntil) return;
+      if (this._tapTimer) return;
+      this._tapTimer = setTimeout(() => { this._tapTimer = null; this.fireTap(); }, 300);
+      return;
+    }
+    if (code === 'Enter') {
+      event.preventDefault();
+      if (Date.now() < this._tapLockUntil) return;
+      if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
+      this.fireTap();
+      return;
+    }
+    if (code === 'ArrowUp' || code === 'ArrowDown') {
+      event.preventDefault();
+      if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
+      this.step(code === 'ArrowUp' ? 1 : -1);
+    }
   }
 }
 </script>
 
 <page>
   <view class="container">
-    <text class="title">Verify {{ build }} 階調2</text>
-    <text class="head">1: 100〜255 を6段 (31刻み)</text>
-    <view class="strip ga0"><text class="lab">100</text></view>
-    <view class="strip ga1"><text class="lab">131</text></view>
-    <view class="strip ga2"><text class="lab">162</text></view>
-    <view class="strip ga3"><text class="lab">193</text></view>
-    <view class="strip ga4"><text class="lab">224</text></view>
-    <view class="strip ga5"><text class="lab">255</text></view>
-    <text class="head">2: 100〜255 を11段 (約15.5刻み)</text>
-    <view class="strip gb0"><text class="lab">100</text></view>
-    <view class="strip gb1"><text class="lab">116</text></view>
-    <view class="strip gb2"><text class="lab">131</text></view>
-    <view class="strip gb3"><text class="lab">147</text></view>
-    <view class="strip gb4"><text class="lab">162</text></view>
-    <view class="strip gb5"><text class="lab">178</text></view>
-    <view class="strip gb6"><text class="lab">193</text></view>
-    <view class="strip gb7"><text class="lab">209</text></view>
-    <view class="strip gb8"><text class="lab">224</text></view>
-    <view class="strip gb9"><text class="lab">240</text></view>
-    <view class="strip gb10"><text class="lab">255</text></view>
-    <text class="foot">スワイプでスクロール</text>
+    <text class="title">Kensho {{ build }} 雨サンプル</text>
+    <text class="line sub">{{ status }}</text>
+    <image class="radar" src="{{ imgSrc }}"></image>
   </view>
 </page>
 
@@ -57,58 +96,31 @@ export default {
   align-items: flex-start;
   justify-content: flex-start;
   height: 100vh;
-  padding: 8px;
+  padding: 10px;
 }
 
 .title {
   color: #40FF5E;
   font-size: 13px;
   line-height: 16px;
-}
-
-.head {
-  color: #40FF5E;
-  font-size: 15px;
-  line-height: 19px;
-  margin-top: 6px;
   margin-bottom: 4px;
 }
 
-.foot {
-  color: #40FF5E99;
-  font-size: 12px;
-  line-height: 15px;
-  margin-top: 4px;
-}
-
-.strip {
-  width: 432px;
-  height: 12px;
-  margin-bottom: 1px;
-}
-
-.lab {
+.line {
   color: #40FF5E;
-  font-size: 10px;
-  line-height: 12px;
+  font-size: 22px;
+  line-height: 26px;
 }
 
-.ga0 { background: #006400; }
-.ga1 { background: #008300; }
-.ga2 { background: #00a200; }
-.ga3 { background: #00c100; }
-.ga4 { background: #00e000; }
-.ga5 { background: #00ff00; }
+.sub {
+  color: #40FF5E99;
+  font-size: 18px;
+  line-height: 22px;
+}
 
-.gb0 { background: #006400; }
-.gb1 { background: #007400; }
-.gb2 { background: #008300; }
-.gb3 { background: #009300; }
-.gb4 { background: #00a200; }
-.gb5 { background: #00b200; }
-.gb6 { background: #00c100; }
-.gb7 { background: #00d100; }
-.gb8 { background: #00e000; }
-.gb9 { background: #00f000; }
-.gb10 { background: #00ff00; }
+.radar {
+  width: 448px;
+  height: 286px;
+  margin: 4px 0;
+}
 </style>
