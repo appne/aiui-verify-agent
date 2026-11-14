@@ -5,677 +5,47 @@
 </script>
 
 <script setup>
-// vrf-b24: device report on b23 — map, the four northern rain
-// blobs, the southern cell and the legend strip all rendered,
-// but the text BELOW the image was still invisible, even with a
-// 300x300 source. Likely the visible (in-FOV) area is only the
-// central part of the framebuffer, so anything under a tall
-// image falls outside it. b24: (1) the status line moves ABOVE
-// the image; (2) the source becomes a wide 448x300 frame (with
-// bright corner ticks to judge edge cropping); (3) log budget
-// drops to 4. ASR lines move below the image (sacrificial zone).
-// vrf-b23: device report on b22 — the remote <image> DID render
-// (marker + legend strip seen), but the text below it was cut
-// off: the 448px source seems to render at natural size, pushing
-// everything down (CSS 300px not honoured, or honoured but the
-// layout still overflowed). b23 therefore serves a 300x300
-// source: a dark-green base map (coast/prefecture lines from
-// Natural-Earth-derived GeoJSON) under synthetic JMA-palette rain
-// (a front band + an isolated cell), converted by the same
-// green-ladder pipeline. Question: does the page now fit?
-// vrf-b22: external-image spike (user request 2026-11-13, rain
-// radar): can an AIUI page render an <image> from a remote URL?
-// The page gains a literal-src <image> (a JMA-nowcast radar frame
-// converted on the VM to a green brightness ladder, hosted at a
-// stable public URL — the production shape would be a stable URL
-// whose content updates). onLoad also wx.request-fetches the same
-// URL so network reachability is logged separately from image
-// rendering. The cue log's visual budget drops 19 -> 6 to make
-// room; if <image> renders nothing (or breaks layout) the ASR /
-// cue functions still work and b23 reverts.
-// vrf-b21: last-line cutoff, round 2 (device report on b20: when
-// the real-time line wraps to 2 lines, the scroll area shifts and
-// the last line disappears). Root cause: the log window counted
-// LOGICAL lines (12) while entries and status lines WRAP — the
-// b15 fix only bought slack for the typical case. Now the log
-// render budgets VISUAL lines (estLines: ASCII 9px / wide 15px
-// over a 436px measure, budget 19 incl. one header wrap of
-// slack), the ASR counter line is compressed (r/e/m labels,
-// integer max), and the final/interim desc slices drop 26/24 ->
-// 18 chars so the status lines stop wrapping in the first place.
-// vrf-b20: translation-lane fixes (device report on b19: term
-// cues worked but English was NEVER translated). Two defects:
-// (1) isAlphaFinal demanded pure printable ASCII — but a Japanese
-// recognizer emitting English text plausibly appends '。' or uses
-// full-width Latin, so real English finals fell back to the
-// assist lane and were judged NONE. Detection is now: normalize
-// (full-width -> half-width, JP punctuation -> space) and accept
-// when >=2 Latin letters remain and NO CJK/kana character is
-// present. (2) trPump borrowed the assist lane's seq as its
-// cancel guard, but cueFire bumps seq on EVERY assist cue — an
-// assist cue firing mid-translation silently discarded the
-// translation. The lane now has its own generation counter
-// (trGen), bumped only by asrStop.
-// vrf-b19: alphabet-final auto-translation (device findings +
-// user instruction after the b18 test). FINDING: even in JA mode
-// the recognizer transcribed English speech AS ENGLISH — the
-// ja-JP lang setting does not lock it. And the b17/b18 cue design
-// only ever translated the LATEST final after a pause, dropping
-// earlier foreign utterances. User instruction: when a final is
-// all-alphabet, send it to the AI without waiting for the batch
-// and translate it regardless of content. So: alphabet-only
-// finals (printable ASCII with >=2 letters) bypass the assist
-// lane entirely and enter a FIFO translation queue (trq) that
-// runs immediately, one pair per utterance, mutually exclusive
-// with the assist lane (trBusy/busy cross-checks). The explicit
-// language cycle stays for non-Latin scripts (ZH/KO), whose
-// transcription behaviour is still unverified.
-// vrf-b18: FOREIGN-LANGUAGE mode spike (user request, corrected
-// from 'English' to 'foreign language' in general: if the
-// conversation partner speaks a foreign language, show a Japanese
-// translation — with the caveat that everything depends on the
-// transcription). The ASR lang was hard-coded ja-JP, which would
-// mangle foreign speech into phonetic Japanese garbage; no other
-// ASR language has ever been probed on this runtime. A double tap
-// (a second GlobalHook inside the pending-tap window) cycles the
-// ASR language ja-JP -> en-US -> zh-CN -> ko-KR -> ja-JP...; the
-// ASR line shows JA/EN/ZH/KO; in a foreign mode the cue lane
-// becomes a translator (🗣 foreign final -> 💡 Japanese, 44
-// chars; the LM prompt is source-language-agnostic) instead of
-// the content assistant. Switching language restarts the loop
-// (counters/history reset — acceptable for a spike). The cycle
-// doubles as the support probe: an unsupported language should
-// surface via the ASR 'language-not-supported' error path. Open
-// question beyond this spike: how well the wearer-tuned mic picks
-// up a PARTNER's voice (this only proves wearer-spoken tests).
-// vrf-b17: cue PURPOSE correction (user, after the b15 device
-// conversation test): the point is NOT to converse with the LM —
-// it listens to the conversation and assists about the CONTENT:
-// when a difficult keyword/concept appears, show its meaning;
-// otherwise useful background. The b15 cues had drifted into
-// chat-partner behaviour (greeting replies, suggesting what to
-// say next) because the prompt offered '返答の候補'. The new
-// prompt forbids replying to the speaker and suggesting replies;
-// greetings/small talk get NONE.
-// vrf-b16: gesture disambiguation (user report on b15: taps AND
-// swipes kept flipping the ASR loop between starting/stop — the
-// b15 device capture even shows the conversation ending in
-// 'STOP (manual)' with counters reset). Temple input arrives as
-// GlobalHook FIRST, then the gesture key (tap: Enter, swipe fwd:
-// ArrowUp, swipe back: ArrowDown) — measured by other AIUI devs
-// in the Studio simulator; physical glasses may send a lone
-// GlobalHook only. Pre-b16 code toggled on GlobalHook itself, so
-// every swipe toggled and taps could double-toggle. Now
-// GlobalHook only arms a pending tap (gestureDelayMs, default
-// 300): an Arrow cancels it — swipes are SCROLL ONLY (user
-// request); Enter confirms it (toggle once); if nothing follows,
-// the timer fires it as a lone tap.
-// vrf-b15: display rework #3 (user requests after the b14 device
-// test — readable, though not while walking; and the log's last
-// line was JUST cut off at the bottom). Removed two lines above
-// the scroll area, which also fixes the cutoff: (1) the dedicated
-// 'LM: avail=…' line — the probe latency now rides at the end of
-// the ASR line (' LM1.6s'; failures show ' LM:NG' plus a ⚠ log
-// entry); (2) the live-caption line under it, which duplicated
-// the ASR status line's final/interim text. Layout: think / title
-// / ASR counters+LM / ASR last event / 12-line pair log.
-// vrf-b14: display rework #2 (user request after the b13 device
-// test — "結構面白い" but the 24 px log text overflowed the
-// screen). Layout now: think line (top-left) / title at HALF size
-// (26→13 px) / the ASR live-info lines unchanged / the scroll
-// area in zaisen's footer size (15 px, lh 17). The log shows
-// PAIRS: the utterance that triggered the cue (🗣, the latest
-// final — the AI also receives the previous 2 finals as context)
-// and the AI's reply (💡), 12 lines visible (6 pairs), history 40
-// lines, ArrowUp/Down paging as in b13. NONE still leaves no pair.
-// vrf-b13: display rework (user request after the b12 device test,
-// which PASSED — no more ERRs). The '💡考え中…' indicator moves to
-// its own line at the top-left and is ERASED when the cue settles
-// instead of being overwritten by the reply. AI replies become a
-// scrolling log: each cue is appended as an entry (last 5 shown,
-// chat order), and ArrowUp/ArrowDown page back/forward through the
-// history (kept to 30 entries) so past replies stay readable. NONE
-// results are not logged (nothing to read); ERRs are logged with a
-// ⚠ prefix so failures stay visible in context.
-// vrf-b12: cue engine v3 + legacy probe clutter removed (user call).
-// b11 device test: '💡考え中…' appeared instantly (good) but cues
-// mostly ended in ERR timeout / session errors and the thinking
-// state dragged on. Root causes addressed here:
-//  (1) the 8 s prompt timeout only changed the DISPLAY — the prompt
-//      kept living on the shared session, so the next cue prompted
-//      a busy session and the runtime rejected it (session errors),
-//      cascading. b12 uses a FRESH session per cue (bare create(),
-//      the probe's known-fast path; instructions ride in the prompt
-//      text, no systemPrompt create), prompts it exactly once, and
-//      discards it — a timed-out session is never touched again.
-//  (2) prompts fired mid-speech compete with the ASR loop for the
-//      SoC and ingest ever-growing session context. b12 debounces:
-//      a cue fires only after ~1.2 s of no new final, with just the
-//      last 3 finals as context, i.e. into a pause, from scratch.
-// Removed per user request: the legacy verification surface from
-// the vrf-b2..b7 era (conn/fetch test lines + TEST button, loc /
-// cam API probes, wx-key enumeration lines, camera shoot). Those
-// APIs were verified long ago; kensho's job now is the ASR loop +
-// LM cue. The LM probe stays (it gates the cue engine).
-// vrf-b11: cue UX rework after the b10 device test — the wearer saw
-// NO reaction because cues queued FIFO behind 17 finals and landed
-// 35 s late. Now: a final instantly shows '💡考え中…', at most one
-// cue prompt is in flight, newer finals coalesce into a single
-// pending slot (latest only, never a backlog), the cue session is
-// recreated every 6 prompts to reset accumulated context, and every
-// LM call has a timeout so a hung create/prompt cannot stall the
-// engine silently.
-// vrf-b10: LM calls serialized + cue error text shown; layout slimmed
-// (ASR/LM block moved under the title, probe clutter compressed) so
-// the LM response line is actually readable on the glasses.
-// vrf-b9: LanguageModel probe + LM-backed cue spike (2026-11-11).
-// vrf-b8 proved the ASR loop: interim results stream in, one
-// continuous=false session delivers many finals, restarts are rare.
-// vrf-b9 adds two things:
-//  (1) an on-load probe of the built-in LanguageModel API
-//      (typeof / availability() / one timed Japanese prompt) shown
-//      on the asr3/asr4 lines;
-//  (2) when the probe passes, each ASR final is fed to a dedicated
-//      LanguageModel session that returns at most one short cue
-//      (term explanation / key point / suggested reply, or NONE),
-//      shown on asr4 with its latency; asr5 shows the live interim
-//      caption or the latest final. The Gemini /cue path on the
-//      laptop listener stays as the fallback if LM is unavailable.
-// Enter (tap) toggles the ASR loop as in vrf-b8.
+// vrf-b25: green gradation test (2026-11-14, user request).
+// How many brightness steps can the glasses' green panel
+// actually show? Two screens of solid G-channel strips:
+//   A: 16 steps, G = 0,17,34,...,255 (full range, even ladder)
+//   B: 17 steps — low range 0..56 by 8 (where ladders usually
+//      collapse) + high range 192..255 by 8.
+// Each strip is labelled with its G value in full-brightness
+// text; the user counts how many bands are distinguishable.
+// Tap (GlobalHook arm + Enter confirm, 700 ms lockout — the
+// radar rdr-b7 pattern) cycles A -> B -> A. Verdict feeds the
+// rain ladder design in the radar agent.
 export default {
   data: {
-    build: 'vrf-b24',
-    think: '',
-    asr1: 'ASR: Enter = loop start/stop',
-    asr2: '',
-    imgLine: 'IMG: map + fake rain 448x300',
-    log1: '', log2: '', log3: '', log4: '', log5: '', log6: '',
-    log7: '', log8: '', log9: '', log10: '', log11: '', log12: ''
+    build: 'vrf-b25',
+    screen: 'A',
+    head: 'A: 16段 (0〜255, 17刻み)'
   },
-  _asr: null,
-  onLoad() {
-    setTimeout(() => this.probeLm(), 800);
-    setTimeout(() => this.probeImg(), 400);
-  },
-  // vrf-b22: fetch the radar image URL over the network as a
-  // reachability diagnostic, independent of <image> rendering.
-  probeImg() {
-    const url = 'https://muse.ai/files/1440026499187321/1099997879522808/149kuif5e42rcfmpwkntpkr7/radar-test448.png';
-    const t0 = Date.now();
-    try {
-      wx.request({
-        url,
-        success: (res) => {
-          this.setData({ imgLine: 'IMG req OK ' + ((res && res.statusCode) || '?') + ' ' + (Date.now() - t0) + 'ms' });
-        },
-        fail: (e) => {
-          this.setData({ imgLine: 'IMG req NG ' + String((e && (e.errMsg || e.message)) || e).slice(0, 26) });
-        }
-      });
-    } catch (e) {
-      this.setData({ imgLine: 'IMG req EXC ' + String(e).slice(0, 24) });
-    }
-  },
-  // ---- vrf-b8: ASR continuous-loop spike ----
-  fmtT(ms) {
-    const s = Math.floor(ms / 1000);
-    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-  },
-  asrRender(lastDesc) {
-    const a = this._asr;
-    if (!a) return;
-    const el = a.on ? Date.now() - a.t0 : a.frozenMs;
-    const patch = {
-      asr1: 'ASR #' + a.idx + ' ' + this.fmtT(el) +
-        ' i' + a.interim + ' f' + a.finals +
-        ' r' + a.restarts + ' e' + a.errors +
-        ' m' + Math.round(a.sessMax / 1000) + 's' +
-        this.langTag() +
-        (this._lmInfo || ''),
-      asr2: lastDesc || a.lastDesc || ''
-    };
-    this.setData(patch);
-  },
-  toggleAsr() {
-    if (this._asr && this._asr.on) { this.asrStop('manual'); return; }
-    if (typeof SpeechRecognition === 'undefined') {
-      this.setData({ asr1: 'ASR: SpeechRecognition n/a' });
-      return;
-    }
-    this._asr = {
-      on: true, idx: 0, t0: Date.now(), frozenMs: 0, sessT0: 0,
-      interim: 0, finals: 0, restarts: 0, errors: 0, consecErr: 0,
-      sessMax: 0, hist: [], lastDesc: 'starting...', rec: null, fatal: '',
-      finalsHist: [], lastFinal: '', liveInterim: ''
-    };
-    this.asrRender();
-    this.asrStart();
-  },
-  asrStart() {
-    const a = this._asr;
-    if (!a || !a.on) return;
-    let rec = null;
-    try {
-      rec = new SpeechRecognition();
-    } catch (e) {
-      a.errors++;
-      a.lastDesc = 'ctor NG: ' + String(e).slice(0, 26);
-      this.asrStop('ctor');
-      return;
-    }
-    a.rec = rec;
-    a.idx++;
-    a.sessT0 = Date.now();
-    try { rec.lang = this._lang || 'ja-JP'; } catch (e) { /* ignore */ }
-    try { rec.interimResults = true; } catch (e) { /* ignore */ }
-    try { rec.continuous = false; } catch (e) { /* ignore */ }
-    rec.onresult = (ev) => {
-      try {
-        let transcript = '';
-        let isFinal = false;
-        if (ev && typeof ev.transcript === 'string') {
-          transcript = ev.transcript;
-          isFinal = true;
-        } else if (ev && ev.results && ev.results.length) {
-          const last = ev.results[ev.results.length - 1];
-          const alt = last && last[0];
-          transcript = (alt && alt.transcript) || '';
-          isFinal = !!(last && last.isFinal);
-        }
-        if (!transcript) return;
-        a.consecErr = 0;
-        if (isFinal) {
-          a.finals++;
-          a.hist.unshift(this.fmtT(Date.now() - a.t0) + ' ' + transcript.slice(0, 24));
-          a.hist = a.hist.slice(0, 3);
-          a.lastDesc = 'final: ' + transcript.slice(0, 18);
-          a.finalsHist.push(transcript);
-          if (a.finalsHist.length > 12) a.finalsHist.shift();
-          a.lastFinal = transcript;
-          a.liveInterim = '';
-          this.cueRequest(transcript);
-        } else {
-          a.interim++;
-          a.lastDesc = 'interim: ' + transcript.slice(0, 18);
-          a.liveInterim = transcript;
-        }
-        this.asrRender();
-      } catch (e) {
-        a.lastDesc = 'onresult err';
-        this.asrRender();
-      }
-    };
-    rec.onerror = (ev) => {
-      const msg = String((ev && (ev.error || ev.errMsg)) || 'unknown');
-      a.errors++;
-      a.consecErr++;
-      a.lastDesc = 'err: ' + msg.slice(0, 30);
-      if (msg === 'not-allowed' || msg === 'service-not-allowed' ||
-          msg === 'language-not-supported') {
-        a.fatal = msg;
-      }
-      this.asrRender();
-    };
-    rec.onend = () => {
-      const dur = Date.now() - a.sessT0;
-      if (dur > a.sessMax) a.sessMax = dur;
-      if (!a.on) return;
-      if (a.fatal) { this.asrStop('fatal ' + a.fatal); return; }
-      if (Date.now() - a.t0 > 900000) { this.asrStop('CAP 15min'); return; }
-      if (a.consecErr >= 5) { this.asrStop('errors x' + a.consecErr); return; }
-      a.restarts++;
-      this.asrRender();
-      this.asrStart();
-    };
-    try {
-      rec.start();
-    } catch (e) {
-      a.errors++;
-      a.consecErr++;
-      a.lastDesc = 'start NG: ' + String(e).slice(0, 24);
-      if (a.consecErr >= 5) { this.asrStop('start NG x5'); return; }
-      this.asrRender();
-      setTimeout(() => this.asrStart(), 500);
-    }
-  },
-  asrStop(reason) {
-    const a = this._asr;
-    if (!a) return;
-    a.on = false;
-    a.frozenMs = Date.now() - a.t0;
-    try { if (a.rec) a.rec.stop(); } catch (e) { /* ignore */ }
-    if (this._cue) {
-      if (this._cue.timer) { clearTimeout(this._cue.timer); this._cue.timer = null; }
-      this._cue.dirty = false;
-      this._cue.trq = [];
-      this._cue.trGen++;
-      this._cue.seq++;
-    }
-    this.thinkOff();
-    a.lastDesc = 'STOP (' + reason + ') ' + this.fmtT(a.frozenMs);
-    this.asrRender();
-  },
-  // ---- vrf-b9: built-in LanguageModel probe + cue ----
-  // The blog-documented API is Chrome Prompt-API shaped and may return
-  // promises OR plain values depending on runtime version; lmThen
-  // normalizes both. All failures land on the asr3/asr4 lines so the
-  // glasses screen itself reports what the runtime supports.
-  lmThen(fn) {
-    try {
-      const r = fn();
-      if (r && typeof r.then === 'function') return r;
-      return Promise.resolve(r);
-    } catch (e) {
-      return Promise.reject(e);
-    }
-  },
-  // Serialize every LM call (probe/cue create+prompt) through one
-  // chain: vrf-b9's cue prompt failed with a bare ERR while the probe
-  // prompt may still have been in flight — the runtime may allow only
-  // one active LM operation at a time.
-  lmQueue(fn) {
-    const prev = this._lmQ || Promise.resolve();
-    const p = prev.then(() => this.lmThen(fn), () => this.lmThen(fn));
-    this._lmQ = p.then(() => {}, () => {});
-    return p;
-  },
-  // vrf-b15: the probe no longer owns a display line. Its latency
-  // rides at the end of the ASR line via _lmInfo; failures also drop
-  // a ⚠ entry into the reply log so they stay visible.
-  lmInfoRender() {
-    if (this._asr) { this.asrRender(); return; }
-    this.setData({ asr1: 'ASR: Enter = loop start/stop' +
-      this.langTag() + (this._lmInfo || '') });
-  },
-  langTag() {
-    return this._lang === 'en-US' ? ' EN' : this._lang === 'zh-CN' ? ' ZH' :
-      this._lang === 'ko-KR' ? ' KO' : ' JA';
-  },
-  isForeign() { return !!this._lang && this._lang !== 'ja-JP'; },
-  // vrf-b18: cycle the ASR language; restarts the loop when running.
-  langFlip() {
-    const order = ['ja-JP', 'en-US', 'zh-CN', 'ko-KR'];
-    const cur = order.indexOf(this._lang || 'ja-JP');
-    const wasOn = !!(this._asr && this._asr.on);
-    this._lang = order[(cur + 1) % order.length];
-    if (wasOn) {
-      this.asrStop('lang');
-      this.toggleAsr();
+  _tapTimer: null,
+  _tapLockUntil: 0,
+  fireTap() {
+    this._tapLockUntil = Date.now() + 700;
+    if (this.data.screen === 'A') {
+      this.setData({ screen: 'B', head: 'B: 低域 0〜56 / 高域 192〜255 (8刻み)' });
     } else {
-      this.lmInfoRender();
-    }
-    this.cueLogPush(this._lang === 'en-US' ? '🌐 EN 英語→和訳' :
-      this._lang === 'zh-CN' ? '🌐 ZH 中国語→和訳' :
-      this._lang === 'ko-KR' ? '🌐 KO 韓国語→和訳' : '🌐 JA 日本語');
-  },
-  lmFail(msg) {
-    this._lm = { ok: false };
-    this._lmInfo = ' LM:NG';
-    this.lmInfoRender();
-    this.cueLogPush('⚠ LM ' + msg);
-  },
-  probeLm() {
-    if (typeof Promise === 'undefined') { this.lmFail('no Promise'); return; }
-    if (typeof LanguageModel === 'undefined') { this.lmFail('undefined'); return; }
-    this.lmThen(() => LanguageModel.availability()).then((avail) => {
-      if (avail === 'unavailable') { this.lmFail('unavailable'); return; }
-      const t0 = Date.now();
-      this.lmQueue(() => LanguageModel.create()).then((session) => {
-        this._lm = { ok: true, probe: session };
-        this.lmQueue(() => session.prompt('「乾杯」を5文字以内で言い換えて。')).then((out) => {
-          const sec = ((Date.now() - t0) / 1000).toFixed(1);
-          this._lmInfo = ' LM' + sec + 's';
-          this.lmInfoRender();
-          this.cueLogPush('LM: ' + String(out).trim().slice(0, 28));
-        }).catch((e) => {
-          this.lmFail('prompt ' + String((e && e.message) || e).slice(0, 18));
-        });
-      }).catch((e) => {
-        this.lmFail('create ' + String((e && e.message) || e).slice(0, 18));
-      });
-    }).catch((e) => {
-      this.lmFail('avail ' + String((e && e.message) || e).slice(0, 18));
-    });
-  },
-  // ---- vrf-b12: cue engine v3 (debounce + disposable sessions) ----
-  // A final instantly shows '💡考え中…' and (re)arms a debounce
-  // timer; the cue fires only once speech pauses (~1.2 s with no new
-  // final), so the LM never competes with the ASR loop mid-utterance
-  // and never ingests a long backlog. Each cue uses a FRESH bare
-  // create() session, prompts it exactly once with the last 3 finals
-  // (instructions in the prompt text), then discards the session:
-  // no accumulated context (the probe's 1.6 s condition), and a
-  // timed-out session can never poison the next cue — b11's ERR
-  // timeout → busy-session ERR cascade is structurally impossible.
-  cueState() {
-    if (!this._cue) this._cue = { busy: false, dirty: false, timer: null, seq: 0, log: [], off: 0, curQ: '', trq: [], trBusy: false, trGen: 0 };
-    return this._cue;
-  },
-  // ---- vrf-b13: thinking indicator + reply log ----
-  thinkOn() { this.setData({ think: '💡考え中…' }); },
-  thinkOff() { this.setData({ think: '' }); },
-  cueLogPush(entry) {
-    const c = this.cueState();
-    c.log.push(entry);
-    if (c.log.length > 40) c.log.shift();
-    c.off = 0;
-    this.cueLogRender();
-  },
-  cuePairPush(qLine, aLine) {
-    const c = this.cueState();
-    c.log.push(qLine);
-    c.log.push(aLine);
-    while (c.log.length > 40) c.log.shift();
-    c.off = 0;
-    this.cueLogRender();
-  },
-  // vrf-b21: estimated VISUAL lines of one log entry at 15px
-  // (ASCII ~9px, wide chars 15px, measured against the 448px
-  // canvas with a small safety margin).
-  estLines(s) {
-    let w = 0;
-    const str = String(s || '');
-    for (let i = 0; i < str.length; i++) w += (str.charCodeAt(i) < 0x80) ? 9 : 15;
-    return Math.max(1, Math.ceil(w / 436));
-  },
-  cueLogRender() {
-    const c = this.cueState();
-    const end = Math.max(0, c.log.length - c.off);
-    // Budget the window by visual lines (19) so wrapped entries
-    // can no longer push the last line off-screen; at most 12
-    // entries, always including the newest one.
-    let used = 0;
-    let start = end;
-    while (start > 0 && end - start < 12) {
-      const w = this.estLines(c.log[start - 1]);
-      if (start < end && used + w > 4) break;
-      used += w;
-      start--;
-    }
-    const win = c.log.slice(start, end);
-    const patch = {};
-    for (let i = 0; i < 12; i++) patch['log' + (i + 1)] = win[i] || '';
-    this.setData(patch);
-  },
-  cueScroll(dir) {
-    const c = this.cueState();
-    const maxOff = Math.max(0, c.log.length - 12);
-    c.off = Math.min(maxOff, Math.max(0, c.off + dir * 4));
-    this.cueLogRender();
-  },
-  lmTimeout(p, ms) {
-    return Promise.race([
-      p,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
-    ]);
-  },
-  // vrf-b20: Latin-script detection tolerant of recognizer
-  // habits: full-width Latin is folded to half-width and Japanese
-  // punctuation is blanked before judging; a final counts as
-  // foreign when >=2 Latin letters remain and no CJK/kana
-  // character is present.
-  latinNorm(text) {
-    return String(text || '')
-      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
-      .replace(/[。、・！？]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  },
-  isAlphaFinal(text) {
-    const t = this.latinNorm(text);
-    if (!t) return false;
-    const letters = t.match(/[A-Za-z]/g);
-    if (!letters || letters.length < 2) return false;
-    return !/[぀-ヿ㐀-鿿豈-﫿ｦ-ﾝ]/.test(t);
-  },
-  cueRequest(text) {
-    if (!this._lm || !this._lm.ok) return;
-    const c = this.cueState();
-    if (this.isAlphaFinal(text)) {
-      this.thinkOn();
-      c.trq.push(text);
-      if (c.trq.length > 6) c.trq.shift();
-      this.trPump();
-      return;
-    }
-    this.thinkOn();
-    c.dirty = true;
-    if (c.timer) clearTimeout(c.timer);
-    c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, this.cueDebounceMs || 1200);
-  },
-  cueMaybe() {
-    const c = this.cueState();
-    if (c.busy || !c.dirty) return;
-    if (c.trBusy) {
-      if (c.timer) clearTimeout(c.timer);
-      c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 400);
-      return;
-    }
-    if (!this._asr || !this._asr.on) { c.dirty = false; return; }
-    this.cueFire();
-  },
-  // vrf-b19: FIFO translation lane. Each queued utterance gets its
-  // own disposable-session translation and its own pair, in order.
-  trPump() {
-    const c = this.cueState();
-    if (c.busy || c.trBusy || !c.trq.length) return;
-    if (!this._asr || !this._asr.on) { c.trq = []; return; }
-    const q = c.trq.shift();
-    const genAt = c.trGen;
-    c.trBusy = true;
-    const t0 = Date.now();
-    const promptText = '次の外国語の発話を自然な日本語に訳してください。訳文だけを日本語60文字以内で返してください。装飾記号は使わないでください。\n' + q;
-    this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
-      if (!sess) throw new Error('create-null');
-      return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
-        try { if (sess.destroy) sess.destroy(); } catch (e) { /* ignore */ }
-        return out;
-      }).catch((e) => {
-        try { if (sess.destroy) sess.destroy(); } catch (e2) { /* ignore */ }
-        throw e;
-      });
-    }).then((out) => {
-      if (genAt !== c.trGen) return;
-      const txt = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
-      const sec = ((Date.now() - t0) / 1000).toFixed(1);
-      if (txt && txt !== 'NONE') {
-        this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + txt.slice(0, 44) + ' (' + sec + 's)');
-      }
-    }).catch((e) => {
-      if (genAt !== c.trGen) return;
-      this.cuePairPush('🗣 ' + q.slice(0, 40), '⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
-    }).then(() => {
-      c.trBusy = false;
-      if (c.trq.length) { this.trPump(); return; }
-      if (c.dirty) { this.cueMaybe(); return; }
-      if (!c.busy) this.thinkOff();
-    });
-  },
-  cueFire() {
-    const c = this.cueState();
-    const a = this._asr;
-    if (!a) { c.busy = false; return; }
-    c.busy = true;
-    c.dirty = false;
-    const seq = ++c.seq;
-    const t0 = Date.now();
-    const q = a.finalsHist.length ? a.finalsHist[a.finalsHist.length - 1] : '';
-    c.curQ = q;
-    const convo = a.finalsHist.slice(-3).join('\n');
-    const promptText = this.isForeign()
-      ? '次の外国語の発話を自然な日本語に訳してください。訳文だけを日本語60文字以内で返してください。装飾記号は使わないでください。\n' + q
-      : 'あなたは会話を聞いているだけの補助AIです。発言者への返答や、次に言うことの提案は絶対にしないでください。書き起こし（最新が最後）の中に難しい専門用語・概念が出てきたらその意味を、なければ話題の理解に役立つ背景知識があればそれを、日本語30文字以内で1つだけ出してください。挨拶・相づち・雑談など補助が不要なら NONE とだけ返してください。装飾記号は使わないでください。\n' + convo;
-    this.lmTimeout(this.lmQueue(() => LanguageModel.create()), this.cueCreateTimeoutMs || 6000).then((sess) => {
-      if (!sess) throw new Error('create-null');
-      return this.lmTimeout(this.lmThen(() => sess.prompt(promptText)), this.cuePromptTimeoutMs || 15000).then((out) => {
-        try { if (sess.destroy) sess.destroy(); } catch (e) { /* ignore */ }
-        return out;
-      }).catch((e) => {
-        try { if (sess.destroy) sess.destroy(); } catch (e2) { /* ignore */ }
-        throw e;
-      });
-    }).then((out) => {
-      if (seq === c.seq) {
-        const cue = String(out || '').trim().replace(/\s+/g, ' ').replace(/[*#`>]/g, '');
-        const sec = ((Date.now() - t0) / 1000).toFixed(1);
-        // NONE leaves no pair — there is no reply to read back.
-        if (cue && cue !== 'NONE') {
-          const lim = this.isForeign() ? 44 : 30;
-          this.cuePairPush('🗣 ' + q.slice(0, 40), '💡 ' + cue.slice(0, lim) + ' (' + sec + 's)');
-        }
-      }
-      this.cueDone();
-    }).catch((e) => {
-      if (seq === c.seq) {
-        this.cuePairPush('🗣 ' + q.slice(0, 40), '⚠ ERR ' + String((e && e.message) || e).slice(0, 24));
-      }
-      this.cueDone();
-    });
-  },
-  cueDone() {
-    const c = this.cueState();
-    c.busy = false;
-    // Finals arrived while this cue was in flight: take one short
-    // breath, then cue the newest context (never a backlog). The
-    // thinking indicator stays up across that follow-up cue; it is
-    // erased only when the engine goes idle.
-    if (c.dirty && this._asr && this._asr.on) {
-      if (c.timer) clearTimeout(c.timer);
-      c.timer = setTimeout(() => { c.timer = null; this.cueMaybe(); }, 600);
-    } else if (c.trq && c.trq.length) {
-      this.trPump();
-    } else {
-      this.thinkOff();
+      this.setData({ screen: 'A', head: 'A: 16段 (0〜255, 17刻み)' });
     }
   },
   onKeyUp(event) {
-    const code = event.code;
+    const code = event && event.code;
     if (code === 'GlobalHook') {
       event.preventDefault();
-      if (this._tapTimer) {
-        // Second GlobalHook inside the pending window = double
-        // tap: flip the ASR language instead of toggling (b18).
-        clearTimeout(this._tapTimer);
-        this._tapTimer = null;
-        this.langFlip();
-        return;
-      }
-      this._tapTimer = setTimeout(() => {
-        this._tapTimer = null;
-        this.toggleAsr();
-      }, this.gestureDelayMs || 300);
+      if (Date.now() < this._tapLockUntil) return;
+      if (this._tapTimer) return;
+      this._tapTimer = setTimeout(() => { this._tapTimer = null; this.fireTap(); }, 300);
       return;
     }
     if (code === 'Enter') {
       event.preventDefault();
+      if (Date.now() < this._tapLockUntil) return;
       if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
-      this.toggleAsr();
-      return;
-    }
-    if (code === 'ArrowUp' || code === 'ArrowDown') {
-      event.preventDefault();
-      if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
-      this.cueScroll(code === 'ArrowUp' ? 1 : -1);
+      this.fireTap();
     }
   }
 }
@@ -683,24 +53,46 @@ export default {
 
 <page>
   <view class="container">
-    <text class="line sub">{{ think }}</text>
-    <text class="title">Verify {{ build }}</text>
-    <text class="line sub">{{ imgLine }}</text>
-    <image class="radar" src="https://muse.ai/files/1440026499187321/1099997879522808/149kuif5e42rcfmpwkntpkr7/radar-test448.png"></image>
-    <text class="line sub">{{ asr1 }}</text>
-    <text class="line sub">{{ asr2 }}</text>
-    <text class="line cue">{{ log1 }}</text>
-    <text class="line cue">{{ log2 }}</text>
-    <text class="line cue">{{ log3 }}</text>
-    <text class="line cue">{{ log4 }}</text>
-    <text class="line cue">{{ log5 }}</text>
-    <text class="line cue">{{ log6 }}</text>
-    <text class="line cue">{{ log7 }}</text>
-    <text class="line cue">{{ log8 }}</text>
-    <text class="line cue">{{ log9 }}</text>
-    <text class="line cue">{{ log10 }}</text>
-    <text class="line cue">{{ log11 }}</text>
-    <text class="line cue">{{ log12 }}</text>
+    <text class="title">Verify {{ build }} 階調</text>
+    <text class="head">{{ head }}</text>
+    <view v-if="screen === 'A'">
+    <view class="strip ga0"><text class="lab">0</text></view>
+    <view class="strip ga1"><text class="lab">17</text></view>
+    <view class="strip ga2"><text class="lab">34</text></view>
+    <view class="strip ga3"><text class="lab">51</text></view>
+    <view class="strip ga4"><text class="lab">68</text></view>
+    <view class="strip ga5"><text class="lab">85</text></view>
+    <view class="strip ga6"><text class="lab">102</text></view>
+    <view class="strip ga7"><text class="lab">119</text></view>
+    <view class="strip ga8"><text class="lab">136</text></view>
+    <view class="strip ga9"><text class="lab">153</text></view>
+    <view class="strip ga10"><text class="lab">170</text></view>
+    <view class="strip ga11"><text class="lab">187</text></view>
+    <view class="strip ga12"><text class="lab">204</text></view>
+    <view class="strip ga13"><text class="lab">221</text></view>
+    <view class="strip ga14"><text class="lab">238</text></view>
+    <view class="strip ga15"><text class="lab">255</text></view>
+    </view>
+    <view v-else>
+    <view class="strip gb0"><text class="lab">0</text></view>
+    <view class="strip gb1"><text class="lab">8</text></view>
+    <view class="strip gb2"><text class="lab">16</text></view>
+    <view class="strip gb3"><text class="lab">24</text></view>
+    <view class="strip gb4"><text class="lab">32</text></view>
+    <view class="strip gb5"><text class="lab">40</text></view>
+    <view class="strip gb6"><text class="lab">48</text></view>
+    <view class="strip gb7"><text class="lab">56</text></view>
+    <view class="strip gb8"><text class="lab">192</text></view>
+    <view class="strip gb9"><text class="lab">200</text></view>
+    <view class="strip gb10"><text class="lab">208</text></view>
+    <view class="strip gb11"><text class="lab">216</text></view>
+    <view class="strip gb12"><text class="lab">224</text></view>
+    <view class="strip gb13"><text class="lab">232</text></view>
+    <view class="strip gb14"><text class="lab">240</text></view>
+    <view class="strip gb15"><text class="lab">248</text></view>
+    <view class="strip gb16"><text class="lab">255</text></view>
+    </view>
+    <text class="foot">タップ: 画面切替</text>
   </view>
 </page>
 
@@ -711,38 +103,73 @@ export default {
   align-items: flex-start;
   justify-content: flex-start;
   height: 100vh;
-  padding: 10px;
+  padding: 8px;
 }
 
 .title {
   color: #40FF5E;
   font-size: 13px;
   line-height: 16px;
+}
+
+.head {
+  color: #40FF5E;
+  font-size: 15px;
+  line-height: 19px;
   margin-bottom: 4px;
 }
 
-.line {
-  color: #40FF5E;
-  font-size: 22px;
-  line-height: 26px;
-}
-
-.sub {
+.foot {
   color: #40FF5E99;
-  font-size: 18px;
-  line-height: 22px;
+  font-size: 12px;
+  line-height: 15px;
+  margin-top: 4px;
 }
 
-.cue {
+.strip {
+  width: 432px;
+  height: 12px;
+  margin-bottom: 1px;
+}
+
+.lab {
   color: #40FF5E;
-  font-size: 15px;
-  line-height: 17px;
+  font-size: 10px;
+  line-height: 12px;
 }
 
-.radar {
-  width: 448px;
-  height: 300px;
-  margin: 4px 0;
-}
+.ga0 { background: #000000; }
+.ga1 { background: #001100; }
+.ga2 { background: #002200; }
+.ga3 { background: #003300; }
+.ga4 { background: #004400; }
+.ga5 { background: #005500; }
+.ga6 { background: #006600; }
+.ga7 { background: #007700; }
+.ga8 { background: #008800; }
+.ga9 { background: #009900; }
+.ga10 { background: #00aa00; }
+.ga11 { background: #00bb00; }
+.ga12 { background: #00cc00; }
+.ga13 { background: #00dd00; }
+.ga14 { background: #00ee00; }
+.ga15 { background: #00ff00; }
 
+.gb0 { background: #000000; }
+.gb1 { background: #000800; }
+.gb2 { background: #001000; }
+.gb3 { background: #001800; }
+.gb4 { background: #002000; }
+.gb5 { background: #002800; }
+.gb6 { background: #003000; }
+.gb7 { background: #003800; }
+.gb8 { background: #00c000; }
+.gb9 { background: #00c800; }
+.gb10 { background: #00d000; }
+.gb11 { background: #00d800; }
+.gb12 { background: #00e000; }
+.gb13 { background: #00e800; }
+.gb14 { background: #00f000; }
+.gb15 { background: #00f800; }
+.gb16 { background: #00ff00; }
 </style>
