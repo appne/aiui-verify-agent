@@ -5,39 +5,36 @@
 </script>
 
 <script setup>
-// vrf-b28: same samples as b27, but the image URL carries
-// a load-time cache bust (?t=Date.now()) so regenerated
-// sample files show up without a repackage. (The b27
-// samples were also regenerated production-faithfully:
-// v1 dissolved the labels' G0 outline into the rain.)
-// vrf-b27: additive-rain samples (2026-11-15). The radar's
-// rain compositing became ADDITIVE (terrain G0..32 + rain
-// G80..220) so the land stays visible under a full cover;
-// the wearer wants to judge the BRIGHT end on the real
-// display (samples on a monitor cannot show it). Four
-// synthetic frames, generated with the production formula
-// over the real Kyoto-Station base map and served by the
-// listener as /radar/sampleN.png:
+// vrf-b29: light-rain samples, much dimmer than the
+// production floor (user request 2026-11-15 evening).
+// Production rain starts at G80+; the wearer wants to
+// judge whether a dimmer light-rain field still reads
+// as rain on the real display. Three synthetic frames
+// over the current production Kyoto-Station base (auto
+// labels included), served as /radar/sampleN.png:
 //   0: no rain (the base itself)
-//   1: full light rain (strength 0.15, rain G101)
-//   2: full heavy rain (strength 0.92, rain G208)
-//   3: vertical thirds — none | light | heavy
-// Tap cycles 0 -> 1 -> 2 -> 3; swipes step forward/back.
+//   1: full light rain, rain component G40 (terrain+40)
+//   2: full light rain, rain component G60 (terrain+60)
+// Marks are stamped back production-faithfully (the
+// b27-v1 lesson: the G0 outline must survive).
+// vrf-b28: image URL carries a load-time cache bust
+// (?t=Date.now()) so regenerated sample files show up
+// without a repackage.
+// Tap cycles 0 -> 1 -> 2; swipes step forward/back.
 // Tap handling copies the radar idiom (GlobalHook arm +
 // Enter confirm + 700 ms lockout). BACK is left alone so
 // the OS exit works.
 export default {
   data: {
-    build: 'vrf-b28',
+    build: 'vrf-b29',
     status: '',
     imgSrc: ''
   },
   _base: 'http://100.124.235.107:18765/radar/',
   _samples: [
-    { src: 'sample0.png', label: '1/4 無雨' },
-    { src: 'sample1.png', label: '2/4 全面・薄い雨' },
-    { src: 'sample2.png', label: '3/4 全面・濃い雨' },
-    { src: 'sample3.png', label: '4/4 3分割 無|薄|濃' }
+    { src: 'sample0.png', label: '1/3 無雨' },
+    { src: 'sample1.png', label: '2/3 薄い雨 G40' },
+    { src: 'sample2.png', label: '3/3 薄い雨 G60' }
   ],
   _idx: 0,
   _tapTimer: null,
