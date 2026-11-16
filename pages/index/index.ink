@@ -5,85 +5,68 @@
 </script>
 
 <script setup>
-// vrf-b30: self-exit API probe (user request 2026-11-16).
-// Exiting an agent today takes ~4 BACK presses: our pages
-// consume the first BACK (reload), pass the second one
-// through, and the host stack eats a couple more. If the
-// runtime offers a programmatic exit, BACK x2 could close
-// an agent outright. Nothing in the local docs lists one,
-// so this page probes the candidates on device:
-//   - existence (typeof) for a list of wx.* / global
-//     candidates, shown as OK / --
-//   - swipes move the cursor, tap invokes the selected
-//     candidate (only when it exists); success/fail
-//     callbacks and a 1.2 s survivor timer report back on
-//     screen when the call returns without exiting.
-// wx.navigateTo is a display-only control (a navigation
-// API we may or may not have; it calibrates the rest).
-// Key handling copies the radar/kensho idiom (GlobalHook
-// arm + Enter confirm + 700 ms lockout). BACK is left
-// alone so the OS exit always works as a fallback.
+// vrf-b31: exit-combo probe (follow-up to b30, device
+// findings 2026-11-16). b30 established that
+// wx.exitMiniProgram and window.close EXIST, and that
+// ONE call advances the host exit sequence by exactly
+// one stage (the same as one unconsumed BACK); the
+// agent stays open and ~2 more BACKs finish the exit.
+// This page tests whether stacking calls pops the
+// remaining stages so the agent closes outright:
+//   0: exitMiniProgram x3, synchronous burst
+//   1: exitMiniProgram x4, 250 ms apart
+//   2: exitMiniProgram / window.close alternating x4,
+//      250 ms apart
+//   3: navigateBack x3 burst (delta 1 each)
+//   4: exitMiniProgram x1 (reference: one stage)
+// After firing a combo, count how many extra BACKs are
+// still needed: 0 = the combo closed the agent alone.
+// Swipes move the cursor, tap fires the combo. BACK is
+// left alone so the OS exit always works.
 export default {
   data: {
-    build: 'vrf-b30',
-    status: '候補を選んでタップで実行',
-    r0: '', r1: '', r2: '', r3: '', r4: '',
-    r5: '', r6: '', r7: '', r8: ''
+    build: 'vrf-b31',
+    status: 'コンボを選んでタップで発射',
+    r0: '', r1: '', r2: '', r3: '', r4: ''
   },
   _sel: 0,
   _tapTimer: null,
   _tapLockUntil: 0,
-  _cands: null,
+  _combos: null,
   onLoad() {
     const W = (typeof wx !== 'undefined') ? wx : null;
     const G = (typeof globalThis !== 'undefined') ? globalThis : {};
-    const P = (typeof $page !== 'undefined') ? $page : null;
-    const self = this;
-    const cb = (name) => ({
-      success: () => self.setData({ status: name + ': success コールバック（終了せず）' }),
-      fail: (e) => self.setData({ status: name + ': fail ' + ((e && e.errMsg) || '') }),
-      complete: () => {}
-    });
-    this._cands = [
-      { name: 'wx.exitMiniProgram', ok: !!(W && typeof W.exitMiniProgram === 'function'),
-        run: () => W.exitMiniProgram(cb('exitMiniProgram')) },
-      { name: 'wx.navigateBack', ok: !!(W && typeof W.navigateBack === 'function'),
-        run: () => W.navigateBack(Object.assign({ delta: 99 }, cb('navigateBack'))) },
-      { name: 'wx.closeWindow', ok: !!(W && typeof W.closeWindow === 'function'),
-        run: () => W.closeWindow(cb('closeWindow')) },
-      { name: 'wx.exit', ok: !!(W && typeof W.exit === 'function'),
-        run: () => W.exit() },
-      { name: '$page.finish', ok: !!(P && typeof P.finish === 'function'),
-        run: () => P.finish() },
-      { name: 'history.back', ok: !!(G.history && typeof G.history.back === 'function'),
-        run: () => G.history.back() },
-      { name: 'window.close', ok: typeof G.close === 'function',
-        run: () => G.close() },
-      { name: 'wx.reLaunch', ok: !!(W && typeof W.reLaunch === 'function'),
-        run: () => W.reLaunch(Object.assign({ url: '/pages/index/index' }, cb('reLaunch'))) },
-      { name: 'wx.navigateTo(表示のみ)', ok: !!(W && typeof W.navigateTo === 'function'),
-        run: null }
+    const exitOnce = () => { if (W && typeof W.exitMiniProgram === 'function') W.exitMiniProgram(); };
+    const closeOnce = () => { if (typeof G.close === 'function') G.close(); };
+    const backOnce = () => { if (W && typeof W.navigateBack === 'function') W.navigateBack({ delta: 1 }); };
+    const burst = (fn, n) => () => { for (let i = 0; i < n; i++) fn(); };
+    const spaced = (fns, ms) => () => {
+      fns.forEach((fn, i) => setTimeout(fn, i * ms));
+    };
+    this._combos = [
+      { name: 'exitMiniProgram ×3 連射', run: burst(exitOnce, 3) },
+      { name: 'exitMiniProgram ×4 (250ms間隔)', run: spaced([exitOnce, exitOnce, exitOnce, exitOnce], 250) },
+      { name: 'exit/close 交互 ×4 (250ms間隔)', run: spaced([exitOnce, closeOnce, exitOnce, closeOnce], 250) },
+      { name: 'navigateBack ×3 連射', run: burst(backOnce, 3) },
+      { name: 'exitMiniProgram ×1 (参照)', run: burst(exitOnce, 1) }
     ];
     this.renderRows();
   },
   renderRows() {
     const d = {};
-    for (let i = 0; i < this._cands.length; i++) {
-      const c = this._cands[i];
-      d['r' + i] = (i === this._sel ? '▶ ' : '　') + (c.ok ? 'OK ' : '-- ') + c.name;
+    for (let i = 0; i < this._combos.length; i++) {
+      d['r' + i] = (i === this._sel ? '▶ ' : '　') + this._combos[i].name;
     }
     this.setData(d);
   },
   move(dlt) {
-    const n = this._cands.length;
+    const n = this._combos.length;
     this._sel = ((this._sel + dlt) % n + n) % n;
     this.renderRows();
   },
   invoke() {
-    const c = this._cands[this._sel];
-    if (!c.ok) { this.setData({ status: c.name + ' は存在しません' }); return; }
-    if (!c.run) { this.setData({ status: c.name + ' は表示のみです' }); return; }
-    this.setData({ status: c.name + ' を呼びます…' });
+    const c = this._combos[this._sel];
+    this.setData({ status: c.name + ' を発射…' });
     try {
       c.run();
     } catch (e) {
@@ -91,8 +74,8 @@ export default {
       return;
     }
     setTimeout(() => {
-      this.setData({ status: c.name + ': 呼んだけど終了しませんでした' });
-    }, 1200);
+      this.setData({ status: c.name + ': まだ開いています。残りBACK回数を数えてください' });
+    }, 1600);
   },
   fireTap() {
     this._tapLockUntil = Date.now() + 700;
@@ -125,18 +108,14 @@ export default {
 
 <page>
   <view class="container">
-    <text class="title">Kensho {{ build }} 終了API探し</text>
+    <text class="title">Kensho {{ build }} 終了コンボ検証</text>
     <text class="line sub">{{ status }}</text>
     <text class="row">{{ r0 }}</text>
     <text class="row">{{ r1 }}</text>
     <text class="row">{{ r2 }}</text>
     <text class="row">{{ r3 }}</text>
     <text class="row">{{ r4 }}</text>
-    <text class="row">{{ r5 }}</text>
-    <text class="row">{{ r6 }}</text>
-    <text class="row">{{ r7 }}</text>
-    <text class="row">{{ r8 }}</text>
-    <text class="line sub">スワイプ: 選択 / タップ: 実行 / BACK: 通常終了</text>
+    <text class="line sub">スワイプ: 選択 / タップ: 発射 / BACK: 通常終了</text>
   </view>
 </page>
 
