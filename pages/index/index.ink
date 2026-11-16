@@ -5,58 +5,98 @@
 </script>
 
 <script setup>
-// vrf-b29: light-rain samples, much dimmer than the
-// production floor (user request 2026-11-15 evening).
-// Production rain starts at G80+; the wearer wants to
-// judge whether a dimmer light-rain field still reads
-// as rain on the real display. Three synthetic frames
-// over the current production Kyoto-Station base (auto
-// labels included), served as /radar/sampleN.png:
-//   0: no rain (the base itself)
-//   1: full light rain, rain component G40 (terrain+40)
-//   2: full light rain, rain component G60 (terrain+60)
-// Marks are stamped back production-faithfully (the
-// b27-v1 lesson: the G0 outline must survive).
-// vrf-b28: image URL carries a load-time cache bust
-// (?t=Date.now()) so regenerated sample files show up
-// without a repackage.
-// Tap cycles 0 -> 1 -> 2; swipes step forward/back.
-// Tap handling copies the radar idiom (GlobalHook arm +
-// Enter confirm + 700 ms lockout). BACK is left alone so
-// the OS exit works.
+// vrf-b30: self-exit API probe (user request 2026-11-16).
+// Exiting an agent today takes ~4 BACK presses: our pages
+// consume the first BACK (reload), pass the second one
+// through, and the host stack eats a couple more. If the
+// runtime offers a programmatic exit, BACK x2 could close
+// an agent outright. Nothing in the local docs lists one,
+// so this page probes the candidates on device:
+//   - existence (typeof) for a list of wx.* / global
+//     candidates, shown as OK / --
+//   - swipes move the cursor, tap invokes the selected
+//     candidate (only when it exists); success/fail
+//     callbacks and a 1.2 s survivor timer report back on
+//     screen when the call returns without exiting.
+// wx.navigateTo is a display-only control (a navigation
+// API we may or may not have; it calibrates the rest).
+// Key handling copies the radar/kensho idiom (GlobalHook
+// arm + Enter confirm + 700 ms lockout). BACK is left
+// alone so the OS exit always works as a fallback.
 export default {
   data: {
-    build: 'vrf-b29',
-    status: '',
-    imgSrc: ''
+    build: 'vrf-b30',
+    status: '候補を選んでタップで実行',
+    r0: '', r1: '', r2: '', r3: '', r4: '',
+    r5: '', r6: '', r7: '', r8: ''
   },
-  _base: 'http://100.124.235.107:18765/radar/',
-  _samples: [
-    { src: 'sample0.png', label: '1/3 無雨' },
-    { src: 'sample1.png', label: '2/3 薄い雨 G40' },
-    { src: 'sample2.png', label: '3/3 薄い雨 G60' }
-  ],
-  _idx: 0,
+  _sel: 0,
   _tapTimer: null,
   _tapLockUntil: 0,
+  _cands: null,
   onLoad() {
-    this.applySample();
-  },
-  applySample() {
-    const s = this._samples[this._idx];
-    this.setData({
-      status: s.label,
-      imgSrc: this._base + s.src + '?t=' + Date.now()
+    const W = (typeof wx !== 'undefined') ? wx : null;
+    const G = (typeof globalThis !== 'undefined') ? globalThis : {};
+    const P = (typeof $page !== 'undefined') ? $page : null;
+    const self = this;
+    const cb = (name) => ({
+      success: () => self.setData({ status: name + ': success コールバック（終了せず）' }),
+      fail: (e) => self.setData({ status: name + ': fail ' + ((e && e.errMsg) || '') }),
+      complete: () => {}
     });
+    this._cands = [
+      { name: 'wx.exitMiniProgram', ok: !!(W && typeof W.exitMiniProgram === 'function'),
+        run: () => W.exitMiniProgram(cb('exitMiniProgram')) },
+      { name: 'wx.navigateBack', ok: !!(W && typeof W.navigateBack === 'function'),
+        run: () => W.navigateBack(Object.assign({ delta: 99 }, cb('navigateBack'))) },
+      { name: 'wx.closeWindow', ok: !!(W && typeof W.closeWindow === 'function'),
+        run: () => W.closeWindow(cb('closeWindow')) },
+      { name: 'wx.exit', ok: !!(W && typeof W.exit === 'function'),
+        run: () => W.exit() },
+      { name: '$page.finish', ok: !!(P && typeof P.finish === 'function'),
+        run: () => P.finish() },
+      { name: 'history.back', ok: !!(G.history && typeof G.history.back === 'function'),
+        run: () => G.history.back() },
+      { name: 'window.close', ok: typeof G.close === 'function',
+        run: () => G.close() },
+      { name: 'wx.reLaunch', ok: !!(W && typeof W.reLaunch === 'function'),
+        run: () => W.reLaunch(Object.assign({ url: '/pages/index/index' }, cb('reLaunch'))) },
+      { name: 'wx.navigateTo(表示のみ)', ok: !!(W && typeof W.navigateTo === 'function'),
+        run: null }
+    ];
+    this.renderRows();
   },
-  step(d) {
-    const n = this._samples.length;
-    this._idx = ((this._idx + d) % n + n) % n;
-    this.applySample();
+  renderRows() {
+    const d = {};
+    for (let i = 0; i < this._cands.length; i++) {
+      const c = this._cands[i];
+      d['r' + i] = (i === this._sel ? '▶ ' : '　') + (c.ok ? 'OK ' : '-- ') + c.name;
+    }
+    this.setData(d);
+  },
+  move(dlt) {
+    const n = this._cands.length;
+    this._sel = ((this._sel + dlt) % n + n) % n;
+    this.renderRows();
+  },
+  invoke() {
+    const c = this._cands[this._sel];
+    if (!c.ok) { this.setData({ status: c.name + ' は存在しません' }); return; }
+    if (!c.run) { this.setData({ status: c.name + ' は表示のみです' }); return; }
+    this.setData({ status: c.name + ' を呼びます…' });
+    try {
+      c.run();
+    } catch (e) {
+      this.setData({ status: c.name + ' 例外: ' + e.message });
+      return;
+    }
+    setTimeout(() => {
+      this.setData({ status: c.name + ': 呼んだけど終了しませんでした' });
+    }, 1200);
   },
   fireTap() {
     this._tapLockUntil = Date.now() + 700;
-    this.step(1);
+    this.invoke();
   },
   onKeyUp(event) {
     const code = event && event.code;
@@ -77,7 +117,7 @@ export default {
     if (code === 'ArrowUp' || code === 'ArrowDown') {
       event.preventDefault();
       if (this._tapTimer) { clearTimeout(this._tapTimer); this._tapTimer = null; }
-      this.step(code === 'ArrowUp' ? 1 : -1);
+      this.move(code === 'ArrowUp' ? -1 : 1);
     }
   }
 }
@@ -85,9 +125,18 @@ export default {
 
 <page>
   <view class="container">
-    <text class="title">Kensho {{ build }} 雨サンプル</text>
+    <text class="title">Kensho {{ build }} 終了API探し</text>
     <text class="line sub">{{ status }}</text>
-    <image class="radar" src="{{ imgSrc }}"></image>
+    <text class="row">{{ r0 }}</text>
+    <text class="row">{{ r1 }}</text>
+    <text class="row">{{ r2 }}</text>
+    <text class="row">{{ r3 }}</text>
+    <text class="row">{{ r4 }}</text>
+    <text class="row">{{ r5 }}</text>
+    <text class="row">{{ r6 }}</text>
+    <text class="row">{{ r7 }}</text>
+    <text class="row">{{ r8 }}</text>
+    <text class="line sub">スワイプ: 選択 / タップ: 実行 / BACK: 通常終了</text>
   </view>
 </page>
 
@@ -116,13 +165,14 @@ export default {
 
 .sub {
   color: #40FF5E99;
-  font-size: 18px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 20px;
+  margin-bottom: 6px;
 }
 
-.radar {
-  width: 448px;
-  height: 286px;
-  margin: 4px 0;
+.row {
+  color: #40FF5E;
+  font-size: 17px;
+  line-height: 21px;
 }
 </style>
