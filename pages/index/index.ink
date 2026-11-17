@@ -1,83 +1,80 @@
 <script def>
 {
-  "navigationBarTitleText": "Verify"
+  "title": "kensho"
 }
 </script>
 
 <script setup>
-// vrf-b34: key-event logger. Records every event the ink
-// runtime delivers to onKeyUp (and onKeyDown, if it exists)
-// with its code / key / keyCode and the gap since the
-// previous event. Purpose: capture the exact event shapes
-// and order of ONE physical temple swipe (whose raw macro
-// keys — NOTIFICATION, DPAD_RIGHT, DPAD_DOWN — reach ink
-// pages, proven on odekake odk-b4/b5), so odekake's debug-
-// key fingerprint guard can be built on measured facts.
-// Nothing is consumed (no preventDefault anywhere).
 export default {
   data: {
-    build: 'vrf-b34',
-    L0: '(no events yet)', L1: '', L2: '', L3: '', L4: '',
-    L5: '', L6: '', L7: '', L8: '', L9: '', L10: '', L11: ''
+    build: 'vrf-b35',
+    phase: 'PH0 all filled (tap=next)',
+    a2: 'A2 slot', a3: 'A3 slot', a2c: 'ln', a3c: 'ln',
+    b2: 'B2 slot', b3: 'B3 slot', b2s: '', b3s: '',
+    c2: 'C2 slot', c3: 'C3 slot'
   },
-  _rows: [],
-  _count: 0,
-  _lastAt: 0,
-  onLoad() {},
-  logEvent(tag, event) {
-    const now = Date.now();
-    const dt = this._lastAt ? (now - this._lastAt) : 0;
-    this._lastAt = now;
-    this._count++;
+  _ph: 0,
+  onKeyUp(event) {
     const code = event && event.code;
-    const key = event && event.key;
-    const kc = event && event.keyCode;
-    const row = '#' + this._count + ' ' + tag
-      + ' c=' + code + ' k=' + key + ' kc=' + kc + ' +' + dt;
-    this._rows.unshift(row);
-    if (this._rows.length > 12) this._rows.pop();
-    const d = {};
-    for (let i = 0; i < 12; i++) d['L' + i] = this._rows[i] || '';
-    this.setData(d);
-  },
-  onKeyDown(event) { this.logEvent('DN', event); },
-  onKeyUp(event) { this.logEvent('UP', event); }
+    if (code !== 'Enter') return;
+    event.preventDefault();
+    this._ph = (this._ph + 1) % 2;
+    if (this._ph === 1) {
+      this.setData({
+        phase: 'PH1 cleared: A=class B=style C=plain',
+        a2: '', a3: '', a2c: 'ln col', a3c: 'ln col',
+        b2: '', b3: '',
+        b2s: 'line-height:0px;font-size:0px;height:0px;',
+        b3s: 'line-height:0px;font-size:0px;height:0px;',
+        c2: '', c3: ''
+      });
+    } else {
+      this.setData({
+        phase: 'PH0 all filled (tap=next)',
+        a2: 'A2 slot', a3: 'A3 slot', a2c: 'ln', a3c: 'ln',
+        b2: 'B2 slot', b3: 'B3 slot', b2s: '', b3s: '',
+        c2: 'C2 slot', c3: 'C3 slot'
+      });
+    }
+  }
 }
 </script>
 
-<template>
-  <div class="page">
-    <text class="title">Kensho {{ build }} keylog</text>
-    <text class="row">{{ L0 }}</text>
-    <text class="row">{{ L1 }}</text>
-    <text class="row">{{ L2 }}</text>
-    <text class="row">{{ L3 }}</text>
-    <text class="row">{{ L4 }}</text>
-    <text class="row">{{ L5 }}</text>
-    <text class="row">{{ L6 }}</text>
-    <text class="row">{{ L7 }}</text>
-    <text class="row">{{ L8 }}</text>
-    <text class="row">{{ L9 }}</text>
-    <text class="row">{{ L10 }}</text>
-    <text class="row">{{ L11 }}</text>
-  </div>
-</template>
+<page>
+  <view class="container">
+    <text class="ln">{{ build }}</text>
+    <text class="ln">{{ phase }}</text>
+    <text class="ln">A1 slot</text>
+    <text class="{{ a2c }}">{{ a2 }}</text>
+    <text class="{{ a3c }}">{{ a3 }}</text>
+    <text class="ln">== MARK A ==</text>
+    <text class="ln">B1 slot</text>
+    <text class="ln" style="{{ b2s }}">{{ b2 }}</text>
+    <text class="ln" style="{{ b3s }}">{{ b3 }}</text>
+    <text class="ln">== MARK B ==</text>
+    <text class="ln">C1 slot</text>
+    <text class="ln">{{ c2 }}</text>
+    <text class="ln">{{ c3 }}</text>
+    <text class="ln">== MARK C ==</text>
+  </view>
+</page>
 
 <style>
-.page {
-  display: flex;
-  flex-direction: column;
-  background-color: #000000;
-  padding: 6px;
-}
-.title {
-  color: #40FF5E;
-  font-size: 17px;
-  line-height: 19px;
-}
-.row {
-  color: #40FF5E;
-  font-size: 13px;
-  line-height: 16px;
-}
+  .container {
+    display: flex;
+    flex-direction: column;
+    background-color: #000000;
+    padding-top: 40px;
+    padding-left: 16px;
+  }
+  .ln {
+    color: #40FF5E;
+    font-size: 19px;
+    line-height: 20px;
+  }
+  .col {
+    line-height: 0px;
+    font-size: 0px;
+    height: 0px;
+  }
 </style>
